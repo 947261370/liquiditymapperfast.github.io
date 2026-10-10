@@ -6,7 +6,7 @@ import { Cooldowns, RateCap, WallWatch, ImbalanceWatch, bookBins, imbalanceOf } 
 import { burst } from '../cvd/burst.ts';
 import { flowIds } from '../cvd/ids.ts';
 import { familyKey, venueOfInstrument } from '../cvd/families.ts';
-import { activeIds, inScope, kindOf } from '../scope.ts';
+import { activeIds, kindOf, marketIds } from '../scope.ts';
 import { anomalies } from '../anomaly.ts';
 import { oiDeltas } from '../oi-change.ts';
 import { signedUsd } from '../cvd/text.ts';
@@ -45,19 +45,6 @@ const DEPTH_SETTLE_MS = 12_000;
 /** A minute judged later than this after it ended (a tab that slept, an answer that came late) is history: it does not sound. */
 const DEPTH_FRESH_MS = 90_000;
 const DEPTH_COOLDOWN_MS = 300_000;
-/**
- * The instruments the depth sound adds up: the markets of the enabled venues inside the Spot / Perp filter, from the market list and not
- * from the books in the feed, so a book that drops out for a while is a gap in the recording (`DepthWatch` leaves such minutes out) rather
- * than a new set of instruments that starts the hours of baseline loading again.
- */
-export function depthIds(s: Pick<AppState, 'markets' | 'disabledVenues' | 'scope'>): string[] {
-  const ids = new Set<string>();
-  for (const m of s.markets) {
-    const id = m.instrumentId ?? m.id; if (!id) continue;
-    if (!s.disabledVenues.includes(m.venue ?? id.split(':')[0]!) && inScope(s.scope, s.markets, id)) ids.add(id);
-  }
-  return [...ids].sort();
-}
 /** The recorded columns of instruments over [from, to), one-minute steps (the page's data source). */
 export type ColumnsReader = (ids: string[], from: number, to: number) => Promise<ColumnsFrame>;
 
@@ -212,7 +199,8 @@ export class Alerts {
       if (this.#depthKey) { this.#depth.reset(); this.#depthKey = ''; this.depthState = null; }
       return;
     }
-    const ids = depthIds(s), key = `${ids.join(',')}|${rule.range}|${rule.hours}`;
+    // The markets from the market list, so a book that drops out is a gap (`DepthWatch` leaves such minutes out), not a reload of the hours.
+    const ids = marketIds(s), key = `${ids.join(',')}|${rule.range}|${rule.hours}`;
     if (key !== this.#depthKey) { this.#depth.reset(); this.#depthKey = key; this.#depthTo = 0; this.#depthWait = 0; this.depthState = { minutes: 0, loading: true }; }
     if (this.#depthBusy || now < this.#depthWait || !ids.length) return;
     // Every minute before `settled` has been committed; the first question goes back the whole baseline, an hour at a time.

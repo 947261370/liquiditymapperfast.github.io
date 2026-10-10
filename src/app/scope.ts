@@ -27,6 +27,19 @@ export function activeBooks(state: ScopeState): LiveBook[] {
   return (state.levels?.books ?? []).filter(b => !state.disabledVenues.includes(b.venue) && inScope(state.scope, state.markets, b.id));
 }
 export const activeIds = (state: ScopeState): string[] => activeBooks(state).map(b => b.id);
+/**
+ * The markets of the enabled venues inside the Spot / Perp filter, from the market list and not from the books in the feed: what reads the
+ * recording over hours (the depth sound, the Depth pane's highlight) counts these, so a book that drops out for a while is a gap in the
+ * recording rather than another set of instruments that starts the loading again.
+ */
+export function marketIds(s: Pick<AppState, 'markets' | 'disabledVenues' | 'scope'>): string[] {
+  const ids = new Set<string>();
+  for (const m of s.markets) {
+    const id = m.instrumentId ?? m.id; if (!id) continue;
+    if (!s.disabledVenues.includes(m.venue ?? id.split(':')[0]!) && inScope(s.scope, s.markets, id)) ids.add(id);
+  }
+  return [...ids].sort();
+}
 
 /**
  * What the heatmap is showing: the venue that was chosen to be shown alone, or the aggregate. A venue with no book on the map right now

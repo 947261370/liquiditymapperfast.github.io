@@ -6,14 +6,15 @@ import { DEFAULT_BAR_STATS, type Store, type AppState, type OiBar } from '../sto
 import { oiDeltas } from '../oi-change.ts';
 import { anomalies, type HighlightOptions } from '../anomaly.ts';
 import { venueLabel } from '../venues.ts';
-import { activeIds, emptyScopeMessage } from '../scope.ts';
+import { activeIds, emptyScopeMessage, marketIds } from '../scope.ts';
+import { ASKS, BIDS, DepthBars, fitsBars, neededBars, pixelFlags, sideFlags } from '../depth-bars.ts';
 import type { View } from '../view.ts';
 import { clock, price as fmtPrice, usd } from '../format.ts';
 import { gutter, timeTicks, AXIS_W, type HeatPane } from './heat-pane.ts';
 import { BAR_STATS, GROUP_TITLES, PRESETS, sizeBucketLabels, enabledStats, rowScale, statCellLines, statDef, strength, type StatCell, type StatGroup } from './bar-stats.ts';
 import { HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
-import { barAt, columnAt, depthCardLines, depthColumns, depthKey, imbalanceFlags, ltCardLines, oiCardLines, oiTail, readAt, slotAt } from './pane-cards.ts';
+import { barAt, columnAt, depthCardLines, depthColumns, depthKey, ltCardLines, oiCardLines, oiTail, readAt, slotAt } from './pane-cards.ts';
 import type { StatOptions } from '../stat-options.ts';
 import { el } from '../dom.ts';
 import { button, checkRow, heading, note, numberRow, selectRow, sortableList, togglePanel, type Panel } from '../ui.ts';
@@ -190,8 +191,9 @@ export class DepthPane extends TimePane {
   #key = ''; #busy = false;
   /** When the last request was made, and how long the worker took to answer it (the live edge is asked again on a clock that allows for it). */
   #askedAt = 0; #tookMs = 0;
-  /** The columns Highlights flags, worked out once for each depth answer and setting (the rule looks back over many columns), not on every frame the pointer moves. */
-  #flags: { series: object; key: string; flags: Uint8Array } | null = null;
+  /** The candles the highlight is judged on (`depth-bars.ts`), and what it says for each pixel column of the answer drawn (0, BIDS, ASKS), worked out when either changes, not on every frame the pointer moves. */
+  #bars: DepthBars;
+  #marks: { series: object; key: string; marks: Uint8Array } | null = null;
   /** The pane is too short for a popup drawn on it, so what the pointer is over is said in a page element. */
   #card = new HoverCard();
   #lines: InfoLine[] | null = null;
@@ -199,6 +201,7 @@ export class DepthPane extends TimePane {
   #bell = document.createElement('input');
   constructor(host: HTMLElement, store: Store, view: View, private hub: Hub) {
     super(host, store, view, 'depth');
+    this.#bars = new DepthBars((ids, from, to, stepMs) => hub.source.columns(ids, from, to, stepMs));
     this.head.innerHTML = `<strong>${t('Depth')}</strong><span class="readout"></span>`;
     this.head.querySelector('strong')!.after(helpButton('depthPane'));
     const label = document.createElement('label'); label.className = 'ctl'; label.append(t('Range'));
@@ -262,34 +265,52 @@ export class DepthPane extends TimePane {
     }
     const mid = ph / 2, half = ph / 2 - 6, cue = state.highlight.on;
     const xOf = (t: number) => v.xOf(t, pw);
-    // Which columns stand out is the page's one rule (Highlights: how many deviations, over how many bars before); the rest recedes.
-    const columnsPerBar = s.w * (TIMEFRAMES[state.timeframe] ?? 3_600_000) / Math.max(1, s.t1 - s.t0);
-    const flagKey = `${columnsPerBar}|${state.highlight.length}|${state.highlight.mult}`;
-    if (cue && (this.#flags?.series !== s || this.#flags.key !== flagKey)) this.#flags = { series: s, key: flagKey, flags: imbalanceFlags(s.bid, s.ask, state.highlight, columnsPerBar) };
-    const unusual = cue ? this.#flags!.flags : null;
+    const marks = cue ? this.#highlight(s, state) : null;
     for (let x = 0; x < s.w; x++) {
       const t = s.t0 + x / s.w * (s.t1 - s.t0), t2 = s.t0 + (x + 1) / s.w * (s.t1 - s.t0);
       const x0 = xOf(t), x1 = xOf(t2);
       const b = s.bid[x]!, a = s.ask[x]!;
-      // The side with more liquidity is drawn brighter and the other dimmer, in proportion to the imbalance (no flip, so it does not flicker);
-      // a column the rule flags goes to full strength, and the others show the gap only up to part of it.
-      const total = b + a, imbalance = total > 0 ? (b - a) / total : 0, flagged = unusual?.[x] === 1, strength = flagged ? 1 : Math.min(1, Math.abs(imbalance) / 0.3) * 0.4;
-      const bidAlpha = !cue ? 0.55 : 0.5 + (imbalance > 0 ? 0.45 : -0.28) * strength, askAlpha = !cue ? 0.55 : 0.5 + (imbalance < 0 ? 0.45 : -0.28) * strength;
+      // The side with more liquidity is drawn brighter and the other dimmer, in proportion to the imbalance (no flip, so it does not flicker).
+      // Where Highlights flags the side that was unusually heavy, that side goes to full strength with an edge, and the other side stays as
+      // it was: dimming it too made a highlight look like liquidity that went missing.
+      const total = b + a, imbalance = total > 0 ? (b - a) / total : 0, lean = Math.min(1, Math.abs(imbalance) / 0.3) * 0.4, mark = marks?.[x] ?? 0;
+      const bidAlpha = !cue ? 0.55 : mark === BIDS ? 0.95 : 0.5 + (imbalance > 0 ? 0.45 : -0.28) * lean;
+      const askAlpha = !cue ? 0.55 : mark === ASKS ? 0.95 : 0.5 + (imbalance < 0 ? 0.45 : -0.28) * lean;
       // Asks above the line and bids below it, as they sit on the chart and in the order book.
       if (a > 0) {
         const height = a / max * half;
         ctx.fillStyle = p.ask; ctx.globalAlpha = askAlpha; ctx.fillRect(x0, mid - height, x1 - x0 + 0.6, height);
-        if (flagged && imbalance < 0) { ctx.globalAlpha = 1; ctx.fillRect(x0, mid - height, x1 - x0 + 0.6, 1.5); }
+        if (mark === ASKS) { ctx.globalAlpha = 1; ctx.fillRect(x0, mid - height, x1 - x0 + 0.6, 1.5); }
       }
       if (b > 0) {
         const height = b / max * half;
         ctx.fillStyle = p.bid; ctx.globalAlpha = bidAlpha; ctx.fillRect(x0, mid, x1 - x0 + 0.6, height);
-        if (flagged && imbalance > 0) { ctx.globalAlpha = 1; ctx.fillRect(x0, mid + height - 1.5, x1 - x0 + 0.6, 1.5); }
+        if (mark === BIDS) { ctx.globalAlpha = 1; ctx.fillRect(x0, mid + height - 1.5, x1 - x0 + 0.6, 1.5); }
       }
     }
     ctx.globalAlpha = 1; ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(0, mid + 0.5); ctx.lineTo(pw, mid + 0.5); ctx.stroke();
     ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(usd(max), this.w - AXIS_W + 6, 10); ctx.fillText(usd(max), this.w - AXIS_W + 6, ph - 10);
     ctx.fillText('0', this.w - AXIS_W + 6, mid);
+  }
+
+  /**
+   * Which pixel columns of the answer `s` stand out, and on which side (0, BIDS, ASKS): the page's one rule (Highlights: how many
+   * deviations over how many candles before), judged a candle at a time over the recording merged to each candle (`depth-bars.ts`), so
+   * zooming and panning do not change it. A view of more candles than that can carry (a fine timeframe zoomed far out) is judged a pixel
+   * column at a time, as before.
+   */
+  #highlight(s: { t0: number; t1: number; w: number; bid: Float32Array; ask: Float32Array }, state: AppState): Uint8Array {
+    const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, h = state.highlight;
+    const need = neededBars(s.t0, s.t1, tf, h.length, replaying() ? pageNow() : Infinity);
+    if (fitsBars(need, tf)) {
+      this.#bars.ensure(marketIds(state), this.#range, tf, need, Date.now(), () => this.invalidate());
+      const key = `bars|${this.#bars.version}|${need.from}|${need.to}|${tf}|${h.length}|${h.mult}`;
+      if (this.#marks?.series !== s || this.#marks.key !== key) this.#marks = { series: s, key, marks: pixelFlags(this.#bars.flags(need, tf, h), need.from, tf, s.t0, s.t1, s.w) };
+    } else {
+      const columnsPerBar = s.w * tf / Math.max(1, s.t1 - s.t0), key = `pixels|${columnsPerBar}|${h.length}|${h.mult}`;
+      if (this.#marks?.series !== s || this.#marks.key !== key) this.#marks = { series: s, key, marks: sideFlags(s.bid, s.ask, h, columnsPerBar) };
+    }
+    return this.#marks.marks;
   }
 }
 

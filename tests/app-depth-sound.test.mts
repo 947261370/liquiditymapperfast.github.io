@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEPTH_MIN_BASELINE, DepthWatch, depthMinutes, percentile, type DepthMinute } from '../src/app/sound/depth-watch.ts';
-import { Alerts, depthIds, type Player } from '../src/app/sound/alerts.ts';
+import { Alerts, type Player } from '../src/app/sound/alerts.ts';
+import { marketIds } from '../src/app/scope.ts';
 import { DEFAULT_PANEL_SOUNDS, readSounds, type Note } from '../src/app/sound/rules.ts';
 import { FlowBook } from '../src/app/flow-book.ts';
 import { initialState } from '../src/app/store.ts';
@@ -181,6 +182,6 @@ test('a minute judged long after it ended does not sound', async () => {
 
 test('the instruments are the enabled markets inside the filter, whether or not their books are in the feed', () => {
   const s = { markets: [{ instrumentId: 'b:X', venue: 'b', marketType: 'perpetual' }, { instrumentId: 'a:X', venue: 'a', marketType: 'perpetual' }, { instrumentId: 'aspot:X', venue: 'aspot', marketType: 'spot' }, { id: 'c:X', marketType: 'perpetual' }], disabledVenues: ['c'], scope: 'perp' as const };
-  assert.deepEqual(depthIds(s), ['a:X', 'b:X']);
-  assert.deepEqual(depthIds({ ...s, scope: 'all', disabledVenues: [] }), ['a:X', 'aspot:X', 'b:X', 'c:X']);
+  assert.deepEqual(marketIds(s), ['a:X', 'b:X']);
+  assert.deepEqual(marketIds({ ...s, scope: 'all', disabledVenues: [] }), ['a:X', 'aspot:X', 'b:X', 'c:X']);
 });
