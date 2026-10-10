@@ -30,6 +30,8 @@ export interface CvdSettings {
   quietFlag: boolean;
   /** Draw each line from zero at the left edge (off: the running total since the history began). */
   rebase: boolean;
+  /** Mark the bursts seen while the page is open on the exchange lines (the sizes are the flow sound's, `sounds.panels.flow`). */
+  bursts: boolean;
   /**
    * The strip of dot rows above the exchanges (buys against sells over the last minutes, and by trade size): whether it shows; the size
    * bands it splits the trades into, as the numbers of the footprint's size buckets (retail is up to `stripRetailMax`, whales from
@@ -39,7 +41,7 @@ export interface CvdSettings {
   strip: boolean; stripRetailMax: number; stripWhaleMin: number; stripSmall: boolean; stripBlink: boolean;
 }
 
-export const CVD_DEFAULTS: Readonly<CvdSettings> = { span: 'map', rank: '1h', top: 0, v: 2, heights: 'golden', auto: true, refreshMin: 1, pinned: [], quietFlag: true, rebase: true,
+export const CVD_DEFAULTS: Readonly<CvdSettings> = { span: 'map', rank: '1h', top: 0, v: 2, heights: 'golden', auto: true, refreshMin: 1, pinned: [], quietFlag: true, rebase: true, bursts: true,
   strip: true, stripRetailMax: DEFAULT_STAT_OPTIONS.retailMax, stripWhaleMin: DEFAULT_STAT_OPTIONS.whaleMin, stripSmall: true, stripBlink: true };
 
 /** The settings that decide which exchanges are rows and in what order: when only the others change, the rows stay where they are. */
@@ -70,6 +72,7 @@ export function readCvd(saved: unknown): CvdSettings {
     pinned: readPinned(s),
     quietFlag: typeof s.quietFlag === 'boolean' ? s.quietFlag : d.quietFlag,
     rebase: typeof s.rebase === 'boolean' ? s.rebase : d.rebase,
+    bursts: typeof s.bursts === 'boolean' ? s.bursts : d.bursts,
     strip: typeof s.strip === 'boolean' ? s.strip : d.strip, stripRetailMax, stripWhaleMin,
     stripSmall: typeof s.stripSmall === 'boolean' ? s.stripSmall : d.stripSmall, stripBlink: typeof s.stripBlink === 'boolean' ? s.stripBlink : d.stripBlink,
   };

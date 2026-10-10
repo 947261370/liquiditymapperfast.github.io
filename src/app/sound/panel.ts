@@ -49,7 +49,7 @@ export function buildSoundPanel(store: Store, sounds: Sounds, rerender: () => vo
 /** The panel sounds that can also be switched on in the pane they are about. */
 export type PanelSwitch = 'flow' | 'bars' | 'depth';
 const SWITCH_TEXT: Record<PanelSwitch, { name: string; tip: string }> = {
-  flow: { name: t('Burst of taker flow'), tip: t('An exchange bought or sold far more at market in ten seconds than it usually does. High, two-note sweep. The burst is also marked on the column.') },
+  flow: { name: t('Burst of taker flow'), tip: t("An exchange bought or sold far more at market in ten seconds than it usually does. High, two-note sweep. Bursts are also marked on the flow column's lines, sound or not; its settings switch the marks.") },
   bars: { name: t('Candle closes with a big delta'), tip: t('When a candle closes, the net taker flow of every enabled venue over it was at least this much. Mid, two-note triangle.') },
   depth: { name: t('The balance tips'), tip: t('Within 1% of the price, the bids outweigh the asks (or the other way round) by more than this share. It sounds once and again only after the book has come back. Three steps.') },
 };
@@ -62,6 +62,18 @@ export function setPanelSwitch(store: Store, which: PanelSwitch, on: boolean): v
 /** The same switch as in the Sounds panel, for the pane's own settings: both read and write `sounds.panels`, so they never disagree. */
 export const panelSwitchRow = (store: Store, which: PanelSwitch, onChange: () => void = () => {}): HTMLElement =>
   switchRow(SWITCH_TEXT[which].name, SWITCH_TEXT[which].tip, panelSwitchOn(store, which), on => { setPanelSwitch(store, which, on); onChange(); });
+/** How big and how unusual a burst of flow must be, here and in the flow column's settings (they decide its marks too): both write `sounds.panels.flow`. */
+export function burstSizeRows(store: Store, onChange: () => void = () => {}): HTMLElement[] {
+  const flow = store.state.sounds.panels.flow;
+  const change = (patch: Partial<PanelSounds['flow']>): void => {
+    const p = store.state.sounds.panels;
+    store.set({ sounds: readSounds({ ...store.state.sounds, panels: { ...p, flow: { ...p.flow, ...patch } } }) }); onChange();
+  };
+  return [
+    numberRow(t('Smallest burst (USD)'), t('Ignore bursts smaller than this, however unusual they are for a quiet exchange.'), { min: scaledUsd(100_000), step: scaledUsd(100_000), value: scaledUsd(flow.usd) }, usd => change({ usd: unscaledUsd(usd) })),
+    numberRow(t('Sensitivity (deviations)'), t('How far outside its own normal an exchange must go: 2 is touchy, 4 is the default, 8 is only the extreme.'), { min: 2, max: 10, step: 0.5, value: flow.sensitivity }, sensitivity => change({ sensitivity })),
+  ];
+}
 
 /**
  * The sounds a panel may make about what is happening in it. A sound is for something rare and discrete that is worth looking up from
@@ -78,8 +90,7 @@ function panelSounds(store: Store, p: PanelSounds, alerts: Alerts, set: (change:
 
   body.append(heading(t('Flow column')),
     panelSwitchRow(store, 'flow', () => rerender()),
-    numberRow(t('Smallest burst (USD)'), t('Ignore bursts smaller than this, however unusual they are for a quiet exchange.'), { min: scaledUsd(100_000), step: scaledUsd(100_000), value: scaledUsd(p.flow.usd) }, usd => change('flow', { usd: unscaledUsd(usd) })),
-    numberRow(t('Sensitivity (deviations)'), t('How far outside its own normal an exchange must go: 2 is touchy, 4 is the default, 8 is only the extreme.'), { min: 2, max: 10, step: 0.5, value: p.flow.sensitivity }, sensitivity => change('flow', { sensitivity })),
+    ...burstSizeRows(store, rerender),
     tests('flow-burst'));
 
   body.append(heading(t('Bar stats and footprint')),

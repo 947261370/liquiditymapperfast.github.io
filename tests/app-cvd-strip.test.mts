@@ -203,6 +203,6 @@ test('the strip\'s settings: the Bar stats limits to start with, damaged saves r
   assert.equal(read({ strip: false }).strip, false);
   // changing only the strip's own settings leaves the ranking key alone, and changing one of the ranking's does not
   const base = settings();
-  for (const patch of [{ strip: false }, { stripRetailMax: 4, stripWhaleMin: 6 }, { stripSmall: false }, { stripBlink: false }] satisfies Partial<CvdSettings>[]) assert.equal(rankingKey({ ...base, ...patch }), rankingKey(base), JSON.stringify(patch));
+  for (const patch of [{ strip: false }, { stripRetailMax: 4, stripWhaleMin: 6 }, { stripSmall: false }, { stripBlink: false }, { bursts: false }] satisfies Partial<CvdSettings>[]) assert.equal(rankingKey({ ...base, ...patch }), rankingKey(base), JSON.stringify(patch));
   for (const patch of [{ rank: '24h' }, { top: 5 }, { span: '4h' }, { pinned: ['okx'] }, { rebase: false }, { quietFlag: false }] satisfies Partial<CvdSettings>[]) assert.notEqual(rankingKey({ ...base, ...patch }), rankingKey(base), JSON.stringify(patch));
 });

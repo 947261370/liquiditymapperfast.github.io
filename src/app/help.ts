@@ -179,7 +179,8 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     title: t('Flow'), guide: 'flow',
     tip: t('The taker-flow column left of the map: for every exchange, how much was bought and sold at market over time (cumulative volume delta), spot in blue and perpetual in amber, biggest exchanges first. The top row adds them all.'),
     body: [t('Passive liquidity (the heatmap and the book) is what traders have placed and may pull; flow is what they have actually done. A line rising means buyers are lifting offers faster than sellers are hitting bids.'),
-      t('Rows are ranked by volume over the window you choose and re-ranked now and then. Every line has its own scale, so compare shapes, not heights. The labels are on the left so that the ends of the lines stay clear. Hover a row for its numbers; the gear sets how many exchanges, how tall each row is and when the order changes.')],
+      t('Rows are ranked by volume over the window you choose and re-ranked now and then. Every line has its own scale, so compare shapes, not heights. The labels are on the left so that the ends of the lines stay clear. Hover a row for its numbers; the gear sets how many exchanges, how tall each row is and when the order changes.'),
+      t('A small triangle on a line marks a burst: in ten seconds that exchange bought (up) or sold (down) far more at market than it usually does, judged against its last half hour, and at least the smallest burst. Only bursts seen while the page is open are marked, so a reload clears them. The gear switches the marks off and sets how big and how unusual a burst must be.')],
   },
   book: {
     title: t('Order book'), guide: 'order-book',

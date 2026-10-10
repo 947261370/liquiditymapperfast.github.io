@@ -23,7 +23,7 @@ import { aggregateHover, aggregateLabel, rowHover, rowLabel, windowName, type La
 import { laneColors, type LaneColors } from '../cvd/colors.ts';
 import { PriceTrack, type PriceColumns } from '../cvd/price.ts';
 import type { BurstEvent } from '../cvd/burst.ts';
-import { panelSwitchRow } from '../sound/panel.ts';
+import { burstSizeRows, panelSwitchRow } from '../sound/panel.ts';
 import { sizeBucketLabels } from './bar-stats.ts';
 import { CvdStrip } from './cvd-strip.ts';
 import type { Print } from '../prints.ts';
@@ -163,7 +163,7 @@ export class CvdPane {
   settingsChanged(): void {
     const key = rankingKey(this.store.state.cvd);
     if (key !== this.#rankingKey) { this.#rankingKey = key; this.refresh(); return; }
-    this.#syncControls(); if (!this.root.hidden) this.#strip.refresh();
+    this.#syncControls(); this.invalidate(); if (!this.root.hidden) this.#strip.refresh();
   }
   /** Trades that printed just now, for the blink of the dot rows. */
   flash(prints: readonly Print[]): void { this.#strip.flash(prints); }
@@ -221,7 +221,9 @@ export class CvdPane {
       switchRow(t('Start each line at zero'), t('Draw every line from zero at the left edge, so rows can be compared. Off draws the running total since the history began.'), c.rebase, v => this.#set({ rebase: v })),
       note(t('Blue is spot and amber is perpetual, whichever way the money moved. Numbers carry the sign.')),
       ...(isPhone() ? [] : this.#stripSettings(c)),
-      heading(t('Sound')),
+      heading(t('Bursts')),
+      switchRow(t('Mark bursts on the lines'), t("A small triangle on an exchange's line where it bought (up) or sold (down) far more at market in ten seconds than it usually does. Only bursts seen while this page is open are marked."), c.bursts, v => this.#set({ bursts: v })),
+      ...burstSizeRows(this.store),
       panelSwitchRow(this.store, 'flow'),
     );
   }
@@ -396,12 +398,12 @@ export class CvdPane {
     let y = top - this.#scroll;
     model.rows.forEach((row, i) => {
       const h = layout.rows[i]!;
-      if (y + h > top && y < this.#h) this.#paintRow(ctx, p, colors, plot, y, h, row.lanes, rowLabel(row, window, h, cfg.quietFlag), row.key, cfg.rebase);
+      if (y + h > top && y < this.#h) this.#paintRow(ctx, p, colors, plot, y, h, row.lanes, rowLabel(row, window, h, cfg.quietFlag), cfg.bursts, cfg.rebase);
       y += h;
     });
     ctx.restore();
     ctx.fillStyle = p.panel; ctx.fillRect(0, 0, this.#w, top);
-    this.#paintRow(ctx, p, colors, plot, 0, layout.agg, [model.spot, model.perp].filter((l): l is LaneLine => l !== null), aggregateLabel(model, layout.agg, this.#filterNote(s)), '', cfg.rebase);
+    this.#paintRow(ctx, p, colors, plot, 0, layout.agg, [model.spot, model.perp].filter((l): l is LaneLine => l !== null), aggregateLabel(model, layout.agg, this.#filterNote(s)), false, cfg.rebase);
     this.#paintPrice(ctx, p, plot, layout.agg, layout.price, model);
     if (this.#since !== null) this.#paintSince(ctx, p, plot, this.#since);
     ctx.strokeStyle = p.muted; ctx.globalAlpha = 0.55; ctx.beginPath(); ctx.moveTo(0, top + 0.5); ctx.lineTo(this.#w, top + 0.5); ctx.stroke(); ctx.globalAlpha = 1;
@@ -430,14 +432,14 @@ export class CvdPane {
     return m.t0 + Math.max(0, Math.min(1, (x - this.#plot.x) / this.#plot.w)) * (m.t1 - m.t0);
   }
 
-  /** A row: its lanes as lines (each on its own scale), the quiet lanes faded, and its label in the gutter on the left. */
-  #paintRow(ctx: CanvasRenderingContext2D, p: Palette, colors: LaneColors, plot: { x: number; w: number }, y: number, h: number, lanes: readonly LaneLine[], label: readonly LabelLine[], family: string, rebase: boolean): void {
+  /** A row: its lanes as lines (each on its own scale), the quiet lanes faded, their bursts when `bursts`, and its label in the gutter on the left. */
+  #paintRow(ctx: CanvasRenderingContext2D, p: Palette, colors: LaneColors, plot: { x: number; w: number }, y: number, h: number, lanes: readonly LaneLine[], label: readonly LabelLine[], bursts: boolean, rebase: boolean): void {
     const pad = 6, inner = { y: y + pad + 2, h: Math.max(8, h - 2 * pad - 4) }, columns = this.#model!.columns;
     ctx.save(); ctx.strokeStyle = p.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, Math.round(y + h) - 0.5); ctx.lineTo(this.#w, Math.round(y + h) - 0.5); ctx.stroke(); ctx.restore();
     for (const lane of lanes) {
       const color = lane.quiet ? (lane.kind === 'spot' ? colors.spotQuiet : colors.perpQuiet) : (lane.kind === 'spot' ? colors.spot : colors.perp);
       this.#paintLane(ctx, lane, color, plot, inner, columns, rebase, p);
-      if (family) this.#paintEvents(ctx, lane, color, plot, inner, columns, rebase);
+      if (bursts) this.#paintEvents(ctx, lane, color, plot, inner, columns, rebase);
     }
     // The label.
     ctx.save(); ctx.beginPath(); ctx.rect(0, y, this.#gutter - 4, h); ctx.clip();
@@ -499,7 +501,7 @@ export class CvdPane {
     ctx.restore();
   }
 
-  /** A small triangle on the line where a burst of buying or selling was seen (up for buying, down for selling), and the row's outline for a minute after. */
+  /** A small triangle on the line where a burst of buying or selling was seen while the page was open (up for buying, down for selling). */
   #paintEvents(ctx: CanvasRenderingContext2D, lane: LaneLine, color: string, plot: { x: number; w: number }, inner: { y: number; h: number }, columns: number, rebase: boolean): void {
     const model = this.#model!, scale = this.#scaleOf(lane, rebase); if (!scale) return;
     for (const e of this.events) {

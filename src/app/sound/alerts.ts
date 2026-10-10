@@ -89,8 +89,8 @@ export class Alerts {
 
   #flow(now: number): void {
     const s = this.#s, rule = s.sounds.panels.flow;
-    // Bursts are marked on the column whether or not they sound, so they are looked for while the column is on screen or the rule is on.
-    if (!s.show.cvd && !rule.burst) return;
+    // Bursts are marked on the column whether or not they sound, so they are looked for while the column shows its marks or the rule is on.
+    if (!(s.show.cvd && s.cvd.bursts) && !rule.burst) return;
     const nowSec = Math.floor(now / 1000);
     for (const id of flowIds(s, this.flow.ids)) {
       const series = this.flow.get(id); if (!series) continue;

@@ -106,7 +106,7 @@ test('golden heights taper by 1/φ per rank, the aggregate is the tallest, and e
   assert.ok(l.rows[0]! > l.rows[1]! && l.rows[1]! > l.rows[2]! && l.rows[2]! > l.rows[3]!);
   assert.ok(Math.abs(l.rows[0]! / l.rows[1]! - PHI) < 0.02 && Math.abs(l.rows[1]! / l.rows[2]! - PHI) < 0.02, `ratios ${l.rows.join(',')}`);
   assert.ok(l.agg > l.rows[0]!);
-  assert.ok(Math.abs(l.content - 2_000) <= 3, 'the rows fill the room (rounding)');
+  assert.equal(l.content, 2_000, 'the rows fill the room, to the pixel');
   assert.equal(l.price, 40);
 });
 
@@ -126,6 +126,20 @@ test('rows never go below their minimum: what does not fit scrolls', () => {
   assert.ok(l.content > 500, 'taller than the room, so the column scrolls');
   const roomy = rowHeights('equal', 5_000, [0.5, 0.5]);
   assert.ok(Math.abs(roomy.content - 5_000) <= 2);
+});
+
+test('rows that fit never scroll: rounding them cannot push them a pixel past the room', () => {
+  // Nine exchanges as on a live page (2026-10-10): each row rounded on its own made 20 to 44 % of the column heights scroll by 1 to 5 px,
+  // drawing a scroll bar the height of the rows that read as a border.
+  const shares = [0.3, 0.21, 0.14, 0.13, 0.1, 0.07, 0.03, 0.01, 0.01];
+  for (const mode of ['golden', 'volume', 'equal'] as const) {
+    for (let h = 641; h <= 1_600; h++) {
+      const l = rowHeights(mode, h, shares, { minRow: 56, minAgg: 92, price: 44 });
+      assert.equal(maxScroll(l, h), 0, `${mode} at ${h}: ${l.agg} + ${l.rows.join('+')}`);
+      assert.ok(l.rows.every(r => r >= 56) && l.agg > Math.max(...l.rows), `${mode} at ${h}`);
+    }
+    if (mode === 'equal') assert.equal(new Set(rowHeights(mode, 1_037, shares, { minRow: 56, minAgg: 92, price: 44 }).rows).size, 1, 'equal rows stay equal');
+  }
 });
 
 test('no venue rows: the aggregate takes the room', () => {

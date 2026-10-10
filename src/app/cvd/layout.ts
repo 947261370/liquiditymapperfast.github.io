@@ -43,7 +43,10 @@ export function rowHeights(mode: HeightMode, total: number, shares: readonly num
   // The aggregate stays the tallest even where the rows were raised to their minimum.
   const tallest = rows.length ? Math.max(...rows) : 0;
   if (agg < tallest * 1.2) agg = tallest * 1.2;
-  rows = rows.map(Math.round); agg = Math.round(agg);
+  // Whole pixels, the aggregate taking what rounding the rows gained or lost: rounding each row alone made rows that fit overflow the
+  // room by up to a pixel a row, and the column then scrolled by that much behind a scroll bar the height of the rows.
+  const exact = agg + rows.reduce((a, b) => a + b, 0);
+  rows = rows.map(Math.round); agg = Math.round(exact) - rows.reduce((a, b) => a + b, 0);
   return { agg, price, rows, content: price + agg + rows.reduce((a, b) => a + b, 0) };
 }
 
