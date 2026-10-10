@@ -104,7 +104,10 @@ main { --side-w: 420px; --flow-w: 300px; display: grid; grid-template-columns: v
 
 .pane-head { display: flex; align-items: center; gap: 10px; min-height: 26px; padding: 2px 10px; flex: 0 0 auto; flex-wrap: wrap; border-bottom: 1px solid var(--line); font-size: 11px; }
 .pane-head strong { font-size: 12px; white-space: nowrap; }
-.pane-head .readout { color: var(--muted); }
+/* The figures a pane writes as the pointer moves take all the room between its name and its controls, however long they are, so the
+   controls never move under the pointer (sized by its text, the readout pushed every control after it at each figure, and could wrap
+   them to another line). A text longer than the room ends in "…"; the pane's hover card has every figure. */
+.pane-head .readout { color: var(--muted); flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pane-head .readout b { color: var(--text); }
 .pane-head .readout b.bid { color: var(--bid); }
 .pane-head .readout b.ask { color: var(--ask); }
