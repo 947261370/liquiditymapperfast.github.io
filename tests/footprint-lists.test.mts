@@ -61,9 +61,30 @@ test('the sizes windows carry the lines too, and the bars and windows say nothin
   // Filled from the prints, the minute answers like any other (the bars' and the windows' figures agree with the boxes again).
   assert.deepEqual(recorder.unknownLists(), { from: T0 - 2 * MIN, to: T0 - MIN });
   const filled = recorder.fillLists(T0 - 10 * MIN, T0, [{ id: 'a:BTC', t: T0 - 2 * MIN + 5_000, side: 'buy', usd: 40_000 }, { id: 'a:BTC', t: T0 - 20 * MIN, side: 'buy', usd: 99_000 }]);
-  assert.equal(filled, 1); assert.equal(recorder.unknownLists(), null);
+  assert.deepEqual(filled, { filled: 1, mismatched: 0 }); assert.equal(recorder.unknownLists(), null);
   assert.deepEqual(recorder.sizes(['a:BTC'], [5], [25_000, 250_000]).windows[0]!.over, [340_000, 30_000, 300_000, 0]);
-  assert.equal(recorder.fillLists(T0 - 10 * MIN, T0, [{ id: 'a:BTC', t: T0 - 2 * MIN + 6_000, side: 'buy', usd: 70_000 }]), 0, 'a minute that has its list keeps it');
+  assert.deepEqual(recorder.fillLists(T0 - 10 * MIN, T0, [{ id: 'a:BTC', t: T0 - 2 * MIN + 6_000, side: 'buy', usd: 70_000 }]), { filled: 0, mismatched: 0 }, 'a minute that has its list keeps it');
+});
+
+test('a list filled from the prints must add up to the minute\'s boxes, or the minute stays not known and its lines fall back to them', () => {
+  // The boxes counted two buys of $80K; a store that keyed prints by their content kept them as one row.
+  const stats = { buyN: 2, sellN: 1, buy: [0, 0, 160_000, 0, 0, 0, 0, 0], sell: [0, 30_000, 0, 0, 0, 0, 0, 0], v: 2 };
+  const rows: FootprintMinuteRow[] = [
+    { inst: 'a:BTC', t: T0 - 3 * MIN, step: 0.5, bins: [[170_000, 160_000, 30_000]], stats },
+    { inst: 'a:BTC', t: T0 - 2 * MIN, step: 0.5, bins: [[170_000, 160_000, 30_000]], stats: { ...stats, buy: [...stats.buy], sell: [...stats.sell] } },
+    { inst: 'a:BTC', t: T0 - MIN, step: 0.5, bins: [[170_000, 5_000, 0]], stats: { buyN: 1, sellN: 0, buy: [5_000, 0, 0, 0, 0, 0, 0, 0], sell: [0, 0, 0, 0, 0, 0, 0, 0], v: 2 } },
+  ];
+  const recorder = new FootprintRecorder({ load: () => rows, save: () => {}, close: () => {} }, () => T0 + 30_000);
+  const p = (t: number, side: 'buy' | 'sell', usd: number) => ({ id: 'a:BTC', t, side, usd });
+  const done = recorder.fillLists(T0 - 10 * MIN, T0, [
+    p(T0 - 3 * MIN + 1_000, 'buy', 80_000), p(T0 - 3 * MIN + 2_000, 'sell', 30_000),                                        // one of the two buys lost
+    p(T0 - 2 * MIN + 1_000, 'buy', 80_000), p(T0 - 2 * MIN + 1_500, 'buy', 80_000), p(T0 - 2 * MIN + 2_000, 'sell', 30_000),  // complete
+  ]);
+  assert.deepEqual(done, { filled: 2, mismatched: 1 }, 'the minute with only small orders is known and empty; the short one is not');
+  assert.deepEqual(recorder.unknownLists(), { from: T0 - 3 * MIN, to: T0 - 2 * MIN });
+  const bars = recorder.query('a:BTC', T0 - 3 * MIN, T0, MIN, 0, [75_000]).bars, at = (t: number) => bars.find(b => b.t === t)!;
+  assert.equal(at(T0 - 3 * MIN).over, undefined, 'never an exact line from a list that misses an order');
+  assert.deepEqual(at(T0 - 2 * MIN).over, [160_000, 0]); assert.deepEqual(at(T0 - MIN).over, [0, 0]);
 });
 
 test('a minute with no large order shares one empty list, and the first order gives it its own', () => {
@@ -128,6 +149,10 @@ test('/api/v2/footprint and /api/v2/sizes draw the lines asked for, and refuse l
     assert.deepEqual(parseSizes(sizes, [1], 2)!.windows[0]!.over, [80_000, 2_500_000, 0, 2_500_000]);
     const fp = await (await fetch(`${base}/api/v2/footprint?inst=x:BTC&tf=1m&from=${now - MIN}&to=${now + MIN}&cuts=75000`)).json() as { bars: { over?: number[] }[] };
     assert.deepEqual(fp.bars.at(-1)!.over, [80_000, 2_500_000]);
+    // A line with cents is a line with cents: an order of $80,000.20 is under a line at $80,000.40, whatever rounding would say.
+    record(v2.footprint, [{ instrumentId: 'x:BTC', side: 'buy', t: now, usd: 80_000.2 }]);
+    const cents = await (await fetch(`${base}/api/v2/sizes?inst=x:BTC&minutes=1&cuts=80000.4`)).json();
+    assert.deepEqual(parseSizes(cents, [1], 1)!.windows[0]!.over, [0, 2_500_000]);
     assert.equal(parseSizes(sizes, [1], 0)!.windows[0]!.over, undefined, 'a reader that asked for none keeps none');
     for (const query of ['sizes?inst=x:BTC&minutes=1&cuts=10000', 'sizes?inst=x:BTC&minutes=1&cuts=x', `footprint?inst=x:BTC&tf=1m&cuts=${'30000,'.repeat(5)}30000`]) {
       const r = await fetch(`${base}/api/v2/${query}`); assert.equal(r.status, 400, query);

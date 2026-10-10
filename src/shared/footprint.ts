@@ -418,10 +418,13 @@ export class FootprintRecorder {
   /**
    * Give the minutes of [from, to) whose list of large orders is not known (recorded before the lists were kept) the one `prints` make:
    * the large orders of every instrument in that stretch, each once (the print stream keeps every order from the same floor, rebuilt from
-   * the same fills; checked equal to the boxes to the dollar on the live recording, 2026-10-10). Kept in memory only: writing the minutes
-   * back would rewrite a week of rows. Returns how many minutes were given a list.
+   * the same fills; checked equal to the boxes to the dollar on the live recording, 2026-10-10). A minute gets the list only where it adds
+   * up to the minute's own boxes from the floor, side by side: a store that kept two identical orders as one row, or lost some, would
+   * otherwise make a line look exact while missing orders, so such a minute stays not known (its lines fall back to the boxes). Kept in
+   * memory only: writing the minutes back would rewrite a week of rows. Returns how many minutes were given a list, and how many were not
+   * because their orders did not add up.
    */
-  fillLists(from: number, to: number, prints: Iterable<{ id: string; t: number; side: 'buy' | 'sell'; usd: number }>): number {
+  fillLists(from: number, to: number, prints: Iterable<{ id: string; t: number; side: 'buy' | 'sell'; usd: number }>): { filled: number; mismatched: number } {
     const found = new Map<string, Map<number, number[]>>();
     for (const p of prints) {
       if (!(p.t >= from && p.t < to) || !(p.usd >= this.floorUsd * (1 - 1e-9))) continue;
@@ -429,12 +432,18 @@ export class FootprintRecorder {
       const minute = Math.floor(p.t / MINUTE) * MINUTE, list = minutes.get(minute);
       if (list) list.push(p.side === 'buy' ? p.usd : -p.usd); else minutes.set(minute, [p.side === 'buy' ? p.usd : -p.usd]);
     }
-    let filled = 0;
+    const sum = (values: readonly number[]): number => { let s = 0; for (let i = 1; i < values.length; i++) s += values[i]!; return s; };
+    const agrees = (listed: number, boxes: number): boolean => Math.abs(listed - boxes) <= Math.max(1, 1e-6 * boxes);
+    let filled = 0, mismatched = 0;
     for (const [id, minutes] of this.#stats) for (const [t, stats] of minutes) {
       if (stats.big !== undefined || t < from || t >= to) continue;
-      stats.big = found.get(id)?.get(t) ?? NO_BIG; filled++;
+      const list = found.get(id)?.get(t) ?? NO_BIG;
+      let buys = 0, sells = 0;
+      for (const v of list) if (v > 0) buys += v; else sells -= v;
+      if (!agrees(buys, sum(stats.buy)) || !agrees(sells, sum(stats.sell))) { mismatched++; continue; }
+      stats.big = list; filled++;
     }
-    return filled;
+    return { filled, mismatched };
   }
 
   /** The stretch from the oldest to the newest minute whose list is not known (null when every list is), for `fillLists`. */

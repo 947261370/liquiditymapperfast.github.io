@@ -132,6 +132,9 @@ test('the page asks for the sizes in one request however many instruments it cou
     assert.equal(requests.length, 1, 'never split: the minutes two answers saw cannot be added');
     for (const id of ids) assert.ok(requests[0]!.includes(encodeURIComponent(id)), id);
     assert.match(requests[0]!, /minutes=1$/); assert.equal(answer.windows.length, 1);
+    // size lines go as they are, cents and all: the server must draw the line where the page counts from
+    await getSizes(ids, [1], [75_000.4, 2_000_000]).catch(() => null);
+    assert.match(requests.at(-1)!, /&cuts=75000\.4,2000000$/);
     // an older server's 404, and a page of HTML, are errors and not answers
     globalThis.fetch = (async () => new Response(JSON.stringify({ error: 'not found' }), { status: 404 })) as typeof fetch;
     await assert.rejects(getSizes(ids, [1]), /404/);

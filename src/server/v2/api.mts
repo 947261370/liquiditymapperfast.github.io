@@ -414,14 +414,14 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
   if (persist) {
     const span = footprint.unknownLists();
     if (span) {
-      const started = performance.now(); let to = span.to, filled = 0;
+      const started = performance.now(); let to = span.to, filled = 0, mismatched = 0;
       const turn = (): void => {
         if (closed) return;
         const from = Math.max(span.from, to - FILL_STEP_MS), list: Print[] = [];
         prints.eachIn(from, to, p => list.push(p));
-        filled += footprint.fillLists(from, to, list); to = from;
+        const done = footprint.fillLists(from, to, list); filled += done.filled; mismatched += done.mismatched; to = from;
         if (to > span.from) setImmediate(turn);
-        else console.log(`footprint: lists of large orders filled for ${filled} minutes in ${((performance.now() - started) / 1000).toFixed(1)} s`);
+        else console.log(`footprint: lists of large orders filled for ${filled} minutes in ${((performance.now() - started) / 1000).toFixed(1)} s${mismatched ? ` (${mismatched} left to the boxes: their orders did not add up)` : ''}`);
       };
       setImmediate(turn);
     }
