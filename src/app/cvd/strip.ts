@@ -1,10 +1,10 @@
-import { SIZE_EDGES, sizeBucket, type SizesAnswer, type SizesWindow } from '../../shared/footprint.ts';
+import { type SizesAnswer, type SizesWindow } from '../../shared/footprint.ts';
+import { SIZE_FLOOR_USD, linesToAsk, overFromBoxes, sizeText } from '../sizes.ts';
 import type { FlowBook } from '../flow-book.ts';
 import type { InfoLine } from '../infobox.ts';
 import type { Scope } from '../store.ts';
 import { t } from '../i18n.ts';
 import { RANK_MS, type CvdSettings } from './settings.ts';
-import { usd } from '../format.ts';
 import { plainUsd, signedUsd, windowName } from './text.ts';
 import { scaledUsd, sizeScale } from '../coin.ts';
 
@@ -26,49 +26,62 @@ export const rankMinutes = (settings: Pick<CvdSettings, 'rank'>): number => Math
 
 // ---- size bands -------------------------------------------------------------------------------------------------------------------------
 
-/** One row of the size group: the footprint's size buckets `from` to `to` (both included), called by their range (`label` for the row, which has "USD" in its heading; `range` with the dollar signs, for a sentence). */
-export interface SizeBand { from: number; to: number; label: string; range: string }
+/**
+ * One row of the size group: the market orders from `lo` to under `hi` (BTC's sizes; `hi` null: no top), called by their sizes (`label` for
+ * the row, which has "USD" in its heading; `range` with the dollar signs, for a sentence).
+ */
+export interface SizeBand { lo: number; hi: number | null; label: string; range: string }
 
-function bandRange(from: number, to: number, money: (usd: number) => string): string {
-  const edge = (i: number): number | undefined => SIZE_EDGES[i] === undefined ? undefined : scaledUsd(SIZE_EDGES[i]!);
-  const low = edge(from)!, high = edge(to + 1);
-  return from === 0 ? `< ${money(high!)}` : high === undefined ? `${money(low)}+` : `${money(low)}–${money(high)}`;
+function bandRange(lo: number, hi: number | null, money: (usd: number) => string): string {
+  return lo === 0 ? `< ${money(scaledUsd(hi!))}` : hi === null ? `≥ ${money(scaledUsd(lo))}` : `${money(scaledUsd(lo))}–${money(scaledUsd(hi))}`;
 }
+const dollars = (v: number): string => `$${sizeText(v)}`;
 
 /**
- * The bands the trades are split into: retail (up to `stripRetailMax`, on one row, or with the first bucket on a row of its own), what lies between,
- * and whales (from `stripWhaleMin`). A band with no bucket in it is left out, so the strip has two to four size rows.
+ * The bands the trades are split into: retail (under `stripRetailUsd`, on one row, or with the orders under the floor on a row of their own),
+ * what lies between, and whales (from `stripWhaleUsd`). A band with nothing in it is left out, so the strip has two to four size rows.
  */
-export function sizeBands(c: Pick<CvdSettings, 'stripRetailMax' | 'stripWhaleMin' | 'stripSmall'>): SizeBand[] {
-  const last = SIZE_EDGES.length - 1, retail = Math.max(0, Math.min(last - 1, c.stripRetailMax)), whale = Math.max(retail + 1, Math.min(last, c.stripWhaleMin));
-  const ranges: [number, number][] = c.stripSmall && retail >= 1 ? [[0, 0], [1, retail]] : [[0, retail]];
-  if (whale - 1 >= retail + 1) ranges.push([retail + 1, whale - 1]);
-  ranges.push([whale, last]);
-  return ranges.map(([from, to]) => ({ from, to, label: bandRange(from, to, usd), range: bandRange(from, to, plainUsd) }));
+export function sizeBands(c: Pick<CvdSettings, 'stripRetailUsd' | 'stripWhaleUsd' | 'stripSmall'>): SizeBand[] {
+  const retail = Math.max(SIZE_FLOOR_USD, c.stripRetailUsd), whale = Math.max(retail, c.stripWhaleUsd);
+  const spans: [number, number | null][] = c.stripSmall && retail > SIZE_FLOOR_USD ? [[0, SIZE_FLOOR_USD], [SIZE_FLOOR_USD, retail]] : [[0, retail]];
+  if (whale > retail) spans.push([retail, whale]);
+  spans.push([whale, null]);
+  return spans.map(([lo, hi]) => ({ lo, hi, label: bandRange(lo, hi, sizeText), range: bandRange(lo, hi, dollars) }));
 }
 
-/**
- * The band a trade of `usd` belongs to, as an index into `bands`, or -1 for none. Only trades from the first bucket's top upward are ever
- * reported as they happen (the print stream's floor), so the first band, when it holds that bucket alone, is never the answer.
- */
+/** The size lines a sizes question asks for, for the coin on screen: the bands' edges that are not box edges (see `linesToAsk`). */
+export const bandCuts = (bands: readonly SizeBand[]): number[] => linesToAsk(bands.flatMap(b => b.hi === null ? [b.lo] : [b.lo, b.hi]), scaledUsd);
+
+/** The band a trade of `usd` (the coin's own USD) belongs to, as an index into `bands`, or -1 for none. */
 export function bandOf(bands: readonly SizeBand[], usd: number): number {
-  const bucket = sizeBucket(usd / sizeScale());
-  return bands.findIndex(b => bucket >= b.from && bucket <= b.to);
+  const size = usd / sizeScale();
+  return bands.findIndex(b => size >= b.lo && (b.hi === null || size < b.hi));
 }
 
 /**
  * The size rows whose leading lamp lights for these trades that just printed: the row each trade of a counted instrument belongs to (a
- * trade of an instrument the ALL VENUES row does not count says nothing about it), and never a row whose bands hold nothing the print stream
- * reports (the stream starts at the second bucket).
+ * trade of an instrument the ALL VENUES row does not count says nothing about it). The print stream starts at the floor, so the row of the
+ * orders under it never lights.
  */
 export function flashBands(bands: readonly SizeBand[], counted: ReadonlySet<string>, prints: readonly { id: string; usd: number }[]): number[] {
   const rows = new Set<number>();
   for (const p of prints) {
     if (!counted.has(p.id)) continue;
     const band = bandOf(bands, p.usd);
-    if (band >= 0 && bands[band]!.to >= 1) rows.add(band);
+    if (band >= 0 && (bands[band]!.hi === null || bands[band]!.hi! > SIZE_FLOOR_USD)) rows.add(band);
   }
   return [...rows];
+}
+
+/**
+ * The USD of the orders from `lo` (BTC's size) in a window: everything from 0; the boxes from the floor (exact); a line's own sums when the
+ * window has them for that line (`cuts`, the coin's sizes, as asked); otherwise the boxes at the nearest edge, which `exact` false says.
+ */
+export function overIn(window: SizesWindow, lo: number, cuts: readonly number[]): { buy: number; sell: number; exact: boolean } {
+  if (lo === 0) return { buy: window.buy.reduce((a, b) => a + b, 0), sell: window.sell.reduce((a, b) => a + b, 0), exact: true };
+  const size = scaledUsd(lo), k = cuts.findIndex(c => Math.abs(c - size) <= 1e-6 * size);
+  if (k >= 0 && window.over) return { buy: window.over[2 * k]!, sell: window.over[2 * k + 1]!, exact: true };
+  return overFromBoxes(window.buy, window.sell, size, sizeScale());
 }
 
 // ---- rows -------------------------------------------------------------------------------------------------------------------------------
@@ -77,6 +90,8 @@ export interface StripRow {
   /** `pulse:5` or `size:2`: the same row keeps its key. `range` is what a sentence calls a size row (the dollar range with its signs). */
   key: string; label: string; range: string;
   buy: number; sell: number;
+  /** A size row whose line between box edges had no sums of its own here (an older server, or minutes not yet filled in): taken at the nearest edge. */
+  approx?: boolean;
   /** Buys' share of the row's own volume (0 to 1), or null when nothing traded. */
   share: number | null;
   /** The row's share of all the size rows' volume (size rows only). */
@@ -102,17 +117,20 @@ export function pulseRows(flow: FlowBook, ids: readonly string[], nowSec: number
   });
 }
 
-/** The size rows from the recorder's window (null: nothing known yet, the rows are idle). */
-export function sizeRows(bands: readonly SizeBand[], window: SizesWindow | null, minutes: number): StripRow[] {
+/**
+ * The size rows from the recorder's window (null: nothing known yet, the rows are idle): each band is the orders from its bottom line less
+ * those from its top line, with `cuts` the lines the window was asked for (see `overIn`).
+ */
+export function sizeRows(bands: readonly SizeBand[], window: SizesWindow | null, minutes: number, cuts: readonly number[] = []): StripRow[] {
   const sums = bands.map(b => {
-    let buy = 0, sell = 0;
-    if (window) for (let i = b.from; i <= b.to; i++) { buy += window.buy[i]!; sell += window.sell[i]!; }
-    return { buy, sell };
+    if (!window) return { buy: 0, sell: 0, approx: false };
+    const from = overIn(window, b.lo, cuts), to = b.hi === null ? { buy: 0, sell: 0, exact: true } : overIn(window, b.hi, cuts);
+    return { buy: Math.max(0, from.buy - to.buy), sell: Math.max(0, from.sell - to.sell), approx: !from.exact || !to.exact };
   });
   const total = sums.reduce((a, s) => a + s.buy + s.sell, 0), covered = window ? window.stats : null;
   return bands.map((b, i) => {
-    const { buy, sell } = sums[i]!;
-    return { key: `size:${i}`, label: b.label, range: b.range, buy, sell, share: shareOf(buy, sell), weight: window && total > 0 ? (buy + sell) / total : null, covered, minutes, partial: isPartial(covered, minutes) };
+    const { buy, sell, approx } = sums[i]!;
+    return { key: `size:${i}`, label: approx ? `≈${b.label}` : b.label, range: b.range, buy, sell, ...(approx ? { approx } : {}), share: shareOf(buy, sell), weight: window && total > 0 ? (buy + sell) / total : null, covered, minutes, partial: isPartial(covered, minutes) };
   });
 }
 
@@ -139,7 +157,7 @@ export function buildStrip(i: StripInput): StripData {
   const at = (minutes: number): SizesWindow | null => i.sizes?.windows.find(w => w.minutes === minutes) ?? null;
   const pulse = pulseRows(i.flow, i.counted, i.nowSec, minutes => at(minutes)?.seen ?? null);
   const window = at(rank), state: SizeState = !i.counted.length ? 'empty' : i.state === 'ready' && !window ? 'loading' : i.state;
-  const rows = sizeRows(bands, state === 'ready' ? window : null, rank), covered = state === 'ready' && window ? window.stats : null;
+  const rows = sizeRows(bands, state === 'ready' ? window : null, rank, bandCuts(bands)), covered = state === 'ready' && window ? window.stats : null;
   return { heading: heading(i.scope), window: windowName(rank * 60), pulse, size: { state, rows, covered, minutes: rank, partial: isPartial(covered, rank) } };
 }
 
@@ -215,6 +233,7 @@ export function rowLines(row: StripRow, data: StripData): InfoLine[] {
     out.push({ label: t('Buy share'), text: percent(row.share) });
     if (row.weight !== null) out.push({ label: t('Share of volume'), text: weightText(row.weight) });
   }
+  if (row.approx) out.push({ text: t('≈ About: for some of these minutes only the size boxes are known (an older server, or minutes it has not filled in yet), so this line is drawn at the nearest box edge.'), color: 'muted', wrap: true });
   if (row.covered !== null) {
     out.push({ label: t('Recorded'), text: t('{covered} of {minutes} minutes', { covered: row.covered, minutes: row.minutes }), bold: row.partial, rule: row.share === null });
     if (row.partial) out.push({ text: t('Part of this window was not recorded: this page or the server was off, or recording began later. The figures cover the part that was.'), color: 'muted', wrap: true });

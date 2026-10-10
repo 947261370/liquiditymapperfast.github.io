@@ -32,6 +32,7 @@ import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, typ
 import { PRICE_SPAN_SHARE, TIME_SPAN_MS, holdPixel, limitFactor, regionAt, wheelAxis } from './heat-zoom.ts';
 import { t } from '../i18n.ts';
 import { currentCoin, scaledUsd } from '../coin.ts';
+import { linesToAsk } from '../sizes.ts';
 import { resolveZone } from '../traded/settings.ts';
 import { MAX_BACK_MS, barMsFor, keyLines, neededFrom, type KeyLine } from '../keylevels/levels.ts';
 import { anyLine } from '../keylevels/settings.ts';
@@ -439,7 +440,9 @@ export class HeatPane {
     const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, fine = this.#footprint.fine;
     const fineRowPx = fine > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(fine, ph)) : 0;
     const rowStep = fine > 0 ? fine * 2 ** this.#lod.level(fineRowPx) : 0;
-    this.#footprint.ensure(state.marketId, state.timeframe, v, rowStep, (inst, tf, from, to, rows) => this.hub.footprint(inst, tf, from, to, rows), () => this.invalidate());
+    // The Bar stats' retail and whale sizes are asked as size lines (those between box edges), so their rows are exact at any size from the floor.
+    const cuts = linesToAsk([state.barStatOptions.retailUsd, state.barStatOptions.whaleUsd], scaledUsd);
+    this.#footprint.ensure(state.marketId, state.timeframe, v, rowStep, (inst, tf, from, to, rows, lines) => this.hub.footprint(inst, tf, from, to, rows, lines), () => this.invalidate(), cuts);
     const rowH = rowStep > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(rowStep, ph)) : 0;
     const factor = visibilityFactor(state.candles, tfMs, v, pw, ph, rowH || 1, rowStep || 1);
     this.#lodFrame = this.#lod.step(now, { enabled: true, hasData: this.#footprint.bars.size > 0, widthCss: pw * tfMs / (v.t1 - v.t0), rowHeightCss: rowH, factor });

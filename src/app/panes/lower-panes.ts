@@ -11,13 +11,14 @@ import { ASKS, BIDS, DepthBars, fitsBars, neededBars, pixelFlags, sideFlags } fr
 import type { View } from '../view.ts';
 import { clock, price as fmtPrice, usd } from '../format.ts';
 import { gutter, timeTicks, AXIS_W, type HeatPane } from './heat-pane.ts';
-import { BAR_STATS, GROUP_TITLES, PRESETS, sizeBucketLabels, enabledStats, rowScale, statCellLines, statDef, strength, type StatCell, type StatGroup } from './bar-stats.ts';
+import { BAR_STATS, GROUP_TITLES, PRESETS, enabledStats, rowScale, statCellLines, statDef, strength, type StatCell, type StatGroup } from './bar-stats.ts';
 import { HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
 import { barAt, columnAt, depthCardLines, depthColumns, depthKey, ltCardLines, oiCardLines, oiTail, readAt, slotAt } from './pane-cards.ts';
 import type { StatOptions } from '../stat-options.ts';
 import { el } from '../dom.ts';
-import { button, checkRow, heading, note, numberRow, selectRow, sortableList, togglePanel, type Panel } from '../ui.ts';
+import { button, checkRow, heading, note, numberRow, selectRow, sizeRow, sortableList, togglePanel, type Panel } from '../ui.ts';
+import { COMMON_SIZES, SIZE_FLOOR_USD, SIZE_MAX_USD, sizeText } from '../sizes.ts';
 import type { LtSeries } from '../lt.ts';
 import { GestureRecognizer, bindTouch, type GestureHandlers, type Pt } from '../touch.ts';
 import { panelSwitchRow, panelSwitchOn, panelSwitchTip, setPanelSwitch } from '../sound/panel.ts';
@@ -612,10 +613,14 @@ export class BarStatsPane extends TimePane {
       numberRow(t('Imbalance min USD'), t('Ignore imbalanced levels smaller than this'), { min: 0, step: scaledUsd(1000), value: scaledUsd(options.imbMinUsd) }, v => setOptions({ imbMinUsd: unscaledUsd(v) })),
       numberRow(t('Stacked rows'), t('Adjacent imbalanced rows on one side that count as a stack'), { min: 2, step: 1, value: options.stackedN }, v => setOptions({ stackedN: Math.round(v) })),
     );
-    const buckets = sizeBucketLabels().map((label, i): [string, string] => [String(i), label]);
+    // Any size from the floor: under it the recording keeps one sum. Whales never start under retail; moving one past the other moves both.
+    const floor = scaledUsd(SIZE_FLOOR_USD), presets = COMMON_SIZES.map(scaledUsd), below = t('From {min}: smaller orders are kept only as one sum.', { min: `$${sizeText(floor)}` });
+    const now = () => this.store.state.barStatOptions;
     body.append(
-      selectRow(t('Retail up to'), t('Market orders in this size bucket and below are retail (delta retail, cvd retail)'), buckets, String(options.retailMax), v => { const r = Number(v); setOptions({ retailMax: r, whaleMin: Math.max(options.whaleMin, Math.min(7, r + 1)) }); }),
-      selectRow(t('Whales from'), t('Market orders in this size bucket and above are whales (delta whales, cvd whales)'), buckets, String(options.whaleMin), v => { const w = Number(v); setOptions({ whaleMin: w, retailMax: Math.min(options.retailMax, Math.max(0, w - 1)) }); }),
+      sizeRow(t('Retail'), t('Market orders under this size are retail (delta retail, cvd retail).'), { sign: '<', value: scaledUsd(options.retailUsd), presets, min: floor, max: scaledUsd(SIZE_MAX_USD), hint: below },
+        v => { const r = unscaledUsd(v); setOptions({ retailUsd: r, whaleUsd: Math.max(now().whaleUsd, r) }); }),
+      sizeRow(t('Whales'), t('Market orders of this size and over are whales (delta whales, cvd whales).'), { sign: '≥', value: scaledUsd(options.whaleUsd), presets, min: floor, max: scaledUsd(SIZE_MAX_USD), hint: below },
+        v => { const w = unscaledUsd(v); setOptions({ whaleUsd: w, retailUsd: Math.min(now().retailUsd, w) }); }),
     );
   }
 
@@ -637,7 +642,9 @@ export class BarStatsPane extends TimePane {
     // Replay: only the candles that ended by its moment (a candle under way would carry its future executions).
     const data = this.heat.footprintData, until = replaying() ? pageNow() : Infinity, all = [...data.bars.values()].filter(b => b.t + tfMs <= until).sort((a, b) => a.t - b.t);
     if (!all.length) { ctx.fillStyle = p.muted; ctx.fillText(t('Bar stats appear once the footprint has executions for the visible candles.'), 12, ph / 2); return; }
-    const input = { bars: all, step: data.step, options, candles: new Map(state.candles.map(c => [c[0], c] as const)), oi: new Map(state.oi.map(b => [b[0], b] as const)) };
+    const input = { bars: all, step: data.step, options, cuts: data.cuts, candles: new Map(state.candles.map(c => [c[0], c] as const)), oi: new Map(state.oi.map(b => [b[0], b] as const)) };
+    // A row taken at the nearest box edge for some bar (the source had no sums for the size set) says so: ≈ before its name.
+    const labelOf = new Map(defs.map(def => [def.id, def.approx?.(input) ? `≈${def.label}` : def.label]));
     const slot = pw * tfMs / (v.t1 - v.t0), top = 3, rowH = Math.max(15, (ph - 6) / defs.length), filled = options.cells === 'filled';
     const visible = all.map((bar, i) => i).filter(i => all[i]!.t + tfMs >= v.t0 && all[i]!.t <= v.t1);
     if (!visible.length) { ctx.fillStyle = p.muted; ctx.fillText(t('No executions recorded for the candles in view.'), 12, ph / 2); return; }
@@ -657,7 +664,7 @@ export class BarStatsPane extends TimePane {
         const before = all[hoverIdx - 1], previous = before && before.t === all[hoverIdx]!.t - tfMs ? values[hoverIdx - 1] : null;
         const seen = visible.map(i => values[i]).filter((x): x is number => x !== null && x !== undefined), rank = (x: number) => def.scale === 'diverging' ? Math.abs(x) : x;
         hoverCell = {
-          label: def.label, title: def.title, value: def.format(mine), tone: def.scale === 'diverging' ? (mine - (def.center ?? 0) >= 0 ? 'buy' : 'sell') : 'text', time: clock(all[hoverIdx]!.t, true),
+          label: labelOf.get(def.id)!, title: def.approx?.(input) ? `${def.title} ${t('≈ About: for some of these minutes only the size boxes are known (an older server, or minutes it has not filled in yet), so this line is drawn at the nearest box edge.')}` : def.title, value: def.format(mine), tone: def.scale === 'diverging' ? (mine - (def.center ?? 0) >= 0 ? 'buy' : 'sell') : 'text', time: clock(all[hoverIdx]!.t, true),
           previous: previous === null || previous === undefined ? null : def.format(previous), rank: 1 + seen.filter(x => rank(x) > rank(mine)).length, of: seen.length,
           sigma: unusual?.[hoverIdx] && found ? found.sigma[hoverIdx] ?? null : null,
         };
@@ -698,6 +705,6 @@ export class BarStatsPane extends TimePane {
       this.#cell = hoverCell;
     }
     ctx.textAlign = 'left'; ctx.font = '10px ui-sans-serif, system-ui, sans-serif';
-    defs.forEach((def, i) => { const y = top + i * rowH, w = ctx.measureText(def.label).width + 10; ctx.globalAlpha = 0.88; ctx.fillStyle = p.panel; ctx.fillRect(2, y + 2, w, rowH - 5); ctx.globalAlpha = 1; ctx.fillStyle = p.muted; ctx.fillText(def.label, 6, y + (rowH - 1) / 2); });
+    defs.forEach((def, i) => { const y = top + i * rowH, label = labelOf.get(def.id)!, w = ctx.measureText(label).width + 10; ctx.globalAlpha = 0.88; ctx.fillStyle = p.panel; ctx.fillRect(2, y + 2, w, rowH - 5); ctx.globalAlpha = 1; ctx.fillStyle = p.muted; ctx.fillText(label, 6, y + (rowH - 1) / 2); });
   }
 }

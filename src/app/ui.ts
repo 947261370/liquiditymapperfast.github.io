@@ -4,6 +4,7 @@ import { scrimFor } from './sheet.ts';
 import { EDGE, chooseSide, placeOn, type Side } from './placement.ts';
 import { makeDraggable } from './drag.ts';
 import { t } from './i18n.ts';
+import { parseSize, sizeText } from './sizes.ts';
 
 /**
  * One panel for every settings popover (bar stats, highlights, sounds, ...): a header, optional sticky tools, a scrolling body, and
@@ -154,6 +155,38 @@ export function numberRow(name: string, description: string, o: { min: number; s
   input.onchange = () => { const v = Number(input.value); if (Number.isFinite(v)) onChange(Math.min(o.max ?? Infinity, Math.max(o.min, v))); };
   return el('label', { class: 'field', tip: description },
     el('span', { class: 'label' }, el('span', { class: 'name', textContent: name }), el('span', { class: 'desc', textContent: description })), input);
+}
+
+/**
+ * A size in USD: the sign that says which side of it counts (`<` for what is under it, `≥` for it and over), the value written out, and the
+ * common sizes in a menu beside it (a native one: a phone shows its own picker). The box takes `100k`, `2.5M`, `1,5M`, `$250,000` (see
+ * `parseSize`); a value under `min` or over `max` is held at the limit with `hint` saying why, and a text that is not a size puts the box
+ * back. With `only`, the setting can take no other sizes: the nearest is taken, and `hint` says so. Values are the coin's own USD.
+ */
+export function sizeRow(name: string, description: string, o: { sign: '<' | '≥'; value: number; presets: readonly number[]; min: number; max?: number; only?: readonly number[]; hint?: string }, onChange: (usd: number) => void): HTMLElement {
+  const text = (v: number): string => `$${sizeText(v)}`;
+  let current = o.value;
+  const input = el('input', { type: 'text', class: 'size-value', value: text(current), ariaLabel: name });
+  input.setAttribute('inputmode', 'decimal'); input.spellcheck = false; input.autocomplete = 'off';
+  const menu = el('select', { class: 'size-menu', ariaLabel: t('Common sizes'), tip: t('Common sizes') });
+  menu.append(new Option('▾', ''));
+  for (const p of o.only ?? o.presets) menu.append(new Option(text(p), String(p)));
+  const said = el('span', { class: 'desc size-hint', hidden: true });
+  const commit = (v: number, why: string | null): void => {
+    input.value = text(v); said.textContent = why ?? ''; said.hidden = !why;
+    if (v !== current) { current = v; onChange(v); }
+  };
+  input.onchange = () => {
+    const typed = parseSize(input.value);
+    if (typed === null) { commit(current, t('Not a size: write it as 100k, 2.5M or 250000.')); return; }
+    if (o.only?.length) { const near = o.only.reduce((a, b) => Math.abs(Math.log(b / typed)) < Math.abs(Math.log(a / typed)) ? b : a); commit(near, near === typed ? null : o.hint ?? null); return; }
+    const held = Math.min(o.max ?? Infinity, Math.max(o.min, typed));
+    commit(held, held === typed ? null : typed < o.min ? o.hint ?? t('From {min}.', { min: text(o.min) }) : t('Up to {max}.', { max: text(o.max!) }));
+  };
+  menu.onchange = () => { const v = Number(menu.value); menu.value = ''; if (v > 0) commit(v, null); };
+  return el('label', { class: 'field size-field', tip: description },
+    el('span', { class: 'label' }, el('span', { class: 'name', textContent: name }), el('span', { class: 'desc', textContent: description }), said),
+    el('span', { class: 'size-ctl' }, el('span', { class: 'size-sign', textContent: o.sign }), input, menu));
 }
 
 /** A row of mutually exclusive choices. */

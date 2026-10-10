@@ -2,7 +2,8 @@ import { volText, type Bar } from './footprint.ts';
 import type { CandleRow, OiBar } from '../store.ts';
 import { price as fmtPrice, usd } from '../format.ts';
 import { SIZE_EDGES } from '../../shared/footprint.ts';
-import { scaledUsd } from '../coin.ts';
+import { scaledUsd, sizeScale } from '../coin.ts';
+import { overFromBoxes } from '../sizes.ts';
 import type { StatOptions } from '../stat-options.ts';
 import { t } from '../i18n.ts';
 import type { InfoLine } from '../infobox.ts';
@@ -30,6 +31,8 @@ export interface StatInput {
   candles: ReadonlyMap<number, CandleRow>;
   oi: ReadonlyMap<number, OiBar>;
   options: StatOptions;
+  /** The size lines the bars were loaded with (the coin's USD, see `FootprintData.cuts`): a bar's `over` holds their sums. */
+  cuts?: readonly number[];
 }
 export type StatScale = 'sequential' | 'diverging' | 'plain';
 export type StatGroup = 'volume' | 'footprint' | 'trades' | 'market';
@@ -46,6 +49,8 @@ export interface StatDef {
   format: (value: number) => string;
   /** One value per bar, in the order of `input.bars`; null when it cannot be computed for that bar. */
   compute: (input: StatInput) => (number | null)[];
+  /** Whether some bar's value was taken at the nearest box edge rather than at the size set (the row then says ≈). */
+  approx?: (input: StatInput) => boolean;
 }
 
 export const GROUP_TITLES: Readonly<Record<StatGroup, string>> = {
@@ -111,10 +116,26 @@ export const stackedRuns = (found: readonly Imbalance[], step: number, n: number
 const tradeStat = (id: string, label: string, title: string, scale: StatScale, format: (v: number) => string, pick: (stats: NonNullable<Bar['stats']>, input: StatInput, bar: Bar) => number | null): StatDef =>
   ({ id, label, group: 'trades', title, scale, format, compute: input => input.bars.map(bar => bar.stats ? pick(bar.stats, input, bar) : null) });
 const sumBuckets = (values: readonly number[], from: number, to: number): number => values.slice(from, to + 1).reduce((a, b) => a + b, 0);
-const sizeDelta = (stats: NonNullable<Bar['stats']>, from: number, to: number): number => sumBuckets(stats.buy, from, to) - sumBuckets(stats.sell, from, to);
-const retail = (o: StatOptions): [number, number] => [0, o.retailMax];
-const whales = (o: StatOptions): [number, number] => [o.whaleMin, 7];
 const running = (values: (number | null)[]): (number | null)[] => { let run = 0; return values.map(v => v === null ? null : (run += v)); };
+
+/**
+ * A bar's market orders from the retail or the whale size: the line's own sums when the bar was loaded with them, else its size boxes (at the
+ * nearest edge when the size lies between two: `exact` false). Null for a bar without trade statistics.
+ */
+export function lineOf(bar: Bar, input: Pick<StatInput, 'options' | 'cuts'>, line: 'retail' | 'whale'): { buy: number; sell: number; exact: boolean } | null {
+  const stats = bar.stats; if (!stats) return null;
+  const size = scaledUsd(line === 'retail' ? input.options.retailUsd : input.options.whaleUsd);
+  const k = input.cuts ? input.cuts.findIndex(c => Math.abs(c - size) <= 1e-6 * size) : -1;
+  if (k >= 0 && bar.over && bar.over.length >= 2 * k + 2) return { buy: bar.over[2 * k]!, sell: bar.over[2 * k + 1]!, exact: true };
+  return overFromBoxes(stats.buy, stats.sell, size, sizeScale());
+}
+/** The delta of a bar's retail orders (under the retail size) or of its whales (from the whale size up). */
+function sizeDelta(bar: Bar, input: StatInput, line: 'retail' | 'whale'): number | null {
+  const sums = lineOf(bar, input, line), stats = bar.stats;
+  if (!sums || !stats) return null;
+  return line === 'whale' ? sums.buy - sums.sell : (sumBuckets(stats.buy, 0, 7) - sums.buy) - (sumBuckets(stats.sell, 0, 7) - sums.sell);
+}
+const approxLine = (line: 'retail' | 'whale') => (input: StatInput): boolean => input.bars.some(bar => lineOf(bar, input, line)?.exact === false);
 
 export const BAR_STATS: readonly StatDef[] = [
   { id: 'vol', label: 'vol', group: 'volume', title: t('Executed volume of the bar (USD, buy + sell)'), scale: 'sequential', format: volText, compute: ({ bars }) => bars.map(total) },
@@ -137,12 +158,12 @@ export const BAR_STATS: readonly StatDef[] = [
   tradeStat('buys', 'buys', t('Number of market buys in the bar'), 'sequential', count, stats => stats.buyN),
   tradeStat('sells', 'sells', t('Number of market sells in the bar'), 'sequential', count, stats => stats.sellN),
   tradeStat('avgTrade', t('avg order'), t('Average market order size: volume divided by the number of market orders (USD)'), 'sequential', volText, stats => stats.buyN + stats.sellN > 0 ? (sumBuckets(stats.buy, 0, 7) + sumBuckets(stats.sell, 0, 7)) / (stats.buyN + stats.sellN) : null),
-  tradeStat('deltaRetail', t('delta retail'), t('Delta of market orders up to the retail size bucket (set in the options)'), 'diverging', signedVol, (stats, input) => sizeDelta(stats, ...retail(input.options))),
-  tradeStat('deltaWhales', t('delta whales'), t('Delta of market orders from the whale size bucket upward (set in the options)'), 'diverging', signedVol, (stats, input) => sizeDelta(stats, ...whales(input.options))),
+  { ...tradeStat('deltaRetail', t('delta retail'), t('Delta of market orders under the retail size (set in the options)'), 'diverging', signedVol, (_stats, input, bar) => sizeDelta(bar, input, 'retail')), approx: approxLine('retail') },
+  { ...tradeStat('deltaWhales', t('delta whales'), t('Delta of market orders from the whale size up (set in the options)'), 'diverging', signedVol, (_stats, input, bar) => sizeDelta(bar, input, 'whale')), approx: approxLine('whale') },
   { id: 'cvdRetail', label: t('cvd retail'), group: 'trades', title: t('Cumulative delta of retail-size market orders over the bars loaded'), scale: 'diverging', format: signedVol,
-    compute: input => running(input.bars.map(bar => bar.stats ? sizeDelta(bar.stats, ...retail(input.options)) : null)) },
+    compute: input => running(input.bars.map(bar => sizeDelta(bar, input, 'retail'))), approx: approxLine('retail') },
   { id: 'cvdWhales', label: t('cvd whales'), group: 'trades', title: t('Cumulative delta of whale-size market orders over the bars loaded'), scale: 'diverging', format: signedVol,
-    compute: input => running(input.bars.map(bar => bar.stats ? sizeDelta(bar.stats, ...whales(input.options)) : null)) },
+    compute: input => running(input.bars.map(bar => sizeDelta(bar, input, 'whale'))), approx: approxLine('whale') },
   { id: 'range', label: 'range', group: 'market', title: t('High minus low of the candle'), scale: 'sequential', format: value => fmtPrice(value),
     compute: ({ bars, candles }) => bars.map(bar => { const c = candles.get(bar.t); return c ? c[2] - c[3] : null; }) },
   { id: 'oiChange', label: t('oi chg'), group: 'market', title: t('Open-interest change over the bar (its close minus the close of the bar before); USD or base coin in the options'), scale: 'diverging', format: signedVol,

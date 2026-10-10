@@ -7,7 +7,8 @@ import type { Store } from '../store.ts';
 import type { Hub } from '../hub.ts';
 import type { Print } from '../prints.ts';
 import type { SizesAnswer } from '../../shared/footprint.ts';
-import { GEOMETRY, askedWindows, buildStrip, coverageNote, flashBands, ledRow, percent, rankMinutes, rowAt, rowLines, sizeBands, stripHeight, weightDots, weightText, type Led, type StripData, type StripRow } from '../cvd/strip.ts';
+import { SIZE_FLOOR_USD } from '../sizes.ts';
+import { GEOMETRY, askedWindows, bandCuts, buildStrip, coverageNote, flashBands, ledRow, percent, rankMinutes, rowAt, rowLines, sizeBands, stripHeight, weightDots, weightText, type Led, type StripData, type StripRow } from '../cvd/strip.ts';
 import { replaying } from '../replay/clock.ts';
 
 const SANS = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
@@ -77,8 +78,8 @@ export class CvdStrip {
     // Replay: the sizes are counted on the server's clock, the flow rows end now: neither is the replay's moment.
     this.root.hidden = !c.strip || isPhone() || replaying();
     if (this.root.hidden) { this.#card.hide(); return; }
-    const windows = askedWindows(rankMinutes(c)), key = this.#key(windows);
-    this.#ask(windows, key);
+    const windows = askedWindows(rankMinutes(c)), cuts = bandCuts(sizeBands(c)), key = this.#key(windows, cuts);
+    this.#ask(windows, cuts, key);
     const known = this.#sizes?.key === key ? this.#sizes.answer : null;
     this.#data = buildStrip({ flow: this.hub.flow, counted: this.#counted, nowSec: Math.floor(Date.now() / 1000), settings: c, scope: s.scope, sizes: known, state: known ? 'ready' : this.#failed ? 'unavailable' : 'loading' });
     this.#h = stripHeight(this.#data.size.rows.length);
@@ -86,15 +87,16 @@ export class CvdStrip {
     this.#schedule();
   }
 
-  #key(windows: readonly number[]): string { return `${this.#countedKey}|${windows.join(',')}`; }
+  /** An answer is for these instruments, windows and size lines: one for other lines splits the orders somewhere else. */
+  #key(windows: readonly number[], cuts: readonly number[]): string { return `${this.#countedKey}|${windows.join(',')}|${cuts.join(',')}`; }
 
   /** One question at a time: at once for a set not asked about yet, every few seconds for the same one, and slowly after a failure (a server that has no such route). */
-  #ask(windows: number[], key: string): void {
+  #ask(windows: number[], cuts: number[], key: string): void {
     if (this.#asking || !this.#counted.length) return;
     const now = Date.now(), fresh = this.#sizes?.key === key;
     if (now - this.#askedAt < (this.#failed ? RETRY_MS : fresh ? ASK_EVERY_MS : 0)) return;
     this.#asking = true; this.#askedAt = now;
-    this.hub.source.sizes([...this.#counted], windows).then(answer => { this.#sizes = { key, answer }; this.#failed = false; }, () => { this.#failed = true; })
+    this.hub.source.sizes([...this.#counted], windows, cuts).then(answer => { this.#sizes = { key, answer }; this.#failed = false; }, () => { this.#failed = true; })
       .finally(() => { this.#asking = false; if (!this.#disposed) this.refresh(); });
   }
 
@@ -200,7 +202,8 @@ export class CvdStrip {
     y += g.groupGap;
     heading(t('ORDER SIZE · USD · {window}', { window: data.window }), data.size.partial && data.size.covered !== null ? coverageNote(data.size.covered, data.size.minutes) : '', t('share of volume'));
     const bands = sizeBands(this.store.state.cvd), top = y, idle = data.size.state === 'unavailable';
-    data.size.rows.forEach((rowData, i) => row(rowData, i, (bands[i]?.to ?? 0) >= 1, idle));
+    // A row that holds orders from the floor up can blink (the print stream starts there); the row of the orders under it cannot.
+    data.size.rows.forEach((rowData, i) => row(rowData, i, bands[i] !== undefined && (bands[i]!.hi === null || bands[i]!.hi! > SIZE_FLOOR_USD), idle));
     if (idle) {
       ctx.font = FONT; ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
       const text = t('Order sizes are not available from this server.'), room = right - dotsX0;

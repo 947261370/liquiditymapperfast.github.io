@@ -6,7 +6,7 @@ import { buildModel } from '../src/app/cvd/model.ts';
 import { CVD_DEFAULTS, readCvd, rankingKey, type CvdSettings } from '../src/app/cvd/settings.ts';
 import { DEFAULT_STAT_OPTIONS } from '../src/app/stat-options.ts';
 import { SIZE_EDGES, type SizesAnswer, type SizesWindow } from '../src/shared/footprint.ts';
-import { GEOMETRY, PULSE_MINUTES, askedWindows, bandOf, buildStrip, coverageNote, flashBands, heading, isPartial, ledRow, percent, pulseRows, rankMinutes, rowAt, rowLines, sizeBands, sizeRows, stripHeight, weightDots, weightText } from '../src/app/cvd/strip.ts';
+import { GEOMETRY, PULSE_MINUTES, askedWindows, bandCuts, bandOf, buildStrip, coverageNote, flashBands, heading, isPartial, ledRow, percent, pulseRows, rankMinutes, rowAt, rowLines, sizeBands, sizeRows, stripHeight, weightDots, weightText } from '../src/app/cvd/strip.ts';
 
 const NOW = Date.UTC(2026, 9, 6, 12, 30, 0), SEC = NOW / 1000;
 const kinds: Record<string, 'spot' | 'perp'> = { 'binance:BTCUSDT': 'perp', 'binancespot:BTCUSDT': 'spot', 'coinbase:BTC-USD': 'spot', 'bybit:BTCUSDT': 'perp', 'okx:BTC-USDT-SWAP': 'perp', 'okx:BTC-USD-SWAP': 'perp' };
@@ -27,29 +27,36 @@ const answer = (rank: number, over: Record<number, Partial<SizesWindow>> = {}): 
 
 test('the default bands are the four of the sample: under 25K, the rest of retail, the middle, and whales', () => {
   const bands = sizeBands(CVD_DEFAULTS);
-  assert.deepEqual(bands.map(b => [b.from, b.to, b.label]), [[0, 0, '< 25K'], [1, 2, '25K–100K'], [3, 4, '100K–500K'], [5, 7, '500K+']]);
-  assert.equal(CVD_DEFAULTS.stripRetailMax, DEFAULT_STAT_OPTIONS.retailMax, 'the Bar stats limits are the starting values');
-  assert.equal(CVD_DEFAULTS.stripWhaleMin, DEFAULT_STAT_OPTIONS.whaleMin);
+  assert.deepEqual(bands.map(b => [b.lo, b.hi, b.label]), [[0, 25_000, '< 25K'], [25_000, 100_000, '25K–100K'], [100_000, 500_000, '100K–500K'], [500_000, null, '≥ 500K']]);
+  assert.equal(CVD_DEFAULTS.stripRetailUsd, DEFAULT_STAT_OPTIONS.retailUsd, 'the Bar stats sizes are the starting values');
+  assert.equal(CVD_DEFAULTS.stripWhaleUsd, DEFAULT_STAT_OPTIONS.whaleUsd);
+  assert.deepEqual(bandCuts(bands), [], 'every edge is a box edge: the boxes are exact there, so no line is asked for');
 });
 
-test('the bands follow the limits: no empty band, never overlapping, always covering every bucket', () => {
-  const edge = (o: Partial<CvdSettings>) => sizeBands({ ...CVD_DEFAULTS, ...o }).map(b => `${b.from}-${b.to}`);
-  assert.deepEqual(edge({ stripSmall: false }), ['0-2', '3-4', '5-7'], 'retail on one row: three bands');
-  assert.deepEqual(edge({ stripRetailMax: 4, stripWhaleMin: 5 }), ['0-0', '1-4', '5-7'], 'nothing between retail and whales: no middle band');
-  assert.deepEqual(edge({ stripRetailMax: 0 }), ['0-0', '1-4', '5-7'], 'retail is the first bucket alone: it is not split from itself');
-  assert.deepEqual(edge({ stripRetailMax: 6, stripWhaleMin: 7 }), ['0-0', '1-6', '7-7']);
-  for (const retail of [0, 1, 2, 3, 4, 5, 6]) for (const whale of [1, 2, 3, 4, 5, 6, 7]) for (const small of [true, false]) {
-    const bands = sizeBands({ stripRetailMax: retail, stripWhaleMin: whale, stripSmall: small });
-    const covered = bands.flatMap(b => Array.from({ length: b.to - b.from + 1 }, (_, i) => b.from + i));
-    assert.deepEqual(covered, [0, 1, 2, 3, 4, 5, 6, 7], `${retail}/${whale}/${small}: every bucket once, in order`);
-    assert.ok(bands.length >= 2 && bands.length <= 4);
+test('the bands follow the sizes, any size from the floor: no empty band, never overlapping, covering every size once', () => {
+  const edge = (o: Partial<CvdSettings>) => sizeBands({ ...CVD_DEFAULTS, ...o }).map(b => `${b.lo}-${b.hi ?? ''}`);
+  assert.deepEqual(edge({ stripSmall: false }), ['0-100000', '100000-500000', '500000-'], 'retail on one row: three bands');
+  assert.deepEqual(edge({ stripRetailUsd: 500_000, stripWhaleUsd: 500_000 }), ['0-25000', '25000-500000', '500000-'], 'nothing between retail and whales: no middle band');
+  assert.deepEqual(edge({ stripRetailUsd: 25_000 }), ['0-25000', '25000-500000', '500000-'], 'retail ends at the floor: it is not split from itself');
+  assert.deepEqual(edge({ stripRetailUsd: 75_000, stripWhaleUsd: 2_000_000 }), ['0-25000', '25000-75000', '75000-2000000', '2000000-'], 'sizes between the box edges');
+  assert.deepEqual(sizeBands({ ...CVD_DEFAULTS, stripRetailUsd: 75_000, stripWhaleUsd: 2_000_000 }).map(b => b.range), ['< $25K', '$25K–$75K', '$75K–$2M', '≥ $2M']);
+  assert.deepEqual(edge({ stripRetailUsd: 1_000_000, stripWhaleUsd: 300_000 }), ['0-25000', '25000-1000000', '1000000-'], 'whales never start under retail');
+  const sizes = [1_000, 25_000, 40_000, 75_000, 100_000, 333_333, 500_000, 2_000_000, 7_500_000, 1e10];
+  for (const retail of sizes) for (const whale of sizes) for (const small of [true, false]) {
+    const bands = sizeBands({ stripRetailUsd: retail, stripWhaleUsd: whale, stripSmall: small }), at = `${retail}/${whale}/${small}`;
+    assert.equal(bands[0]!.lo, 0, at); assert.equal(bands.at(-1)!.hi, null, at);
+    for (let i = 0; i + 1 < bands.length; i++) { assert.equal(bands[i]!.hi, bands[i + 1]!.lo, `${at}: no gap, no overlap`); assert.ok(bands[i]!.lo < bands[i]!.hi!, `${at}: no empty band`); }
+    assert.ok(bands.length >= 2 && bands.length <= 4, at);
+    assert.ok(bands.every(b => b.lo === 0 || b.lo >= 25_000), `${at}: no line under the floor`);
   }
 });
 
-test('a trade belongs to the band of its size bucket, and a trade under the first bucket is on the first band', () => {
+test('a trade belongs to the band of its size, and a trade under the floor is on the first band', () => {
   const bands = sizeBands(CVD_DEFAULTS);
   assert.equal(bandOf(bands, 10_000), 0); assert.equal(bandOf(bands, 25_000), 1); assert.equal(bandOf(bands, 99_999), 1);
   assert.equal(bandOf(bands, 100_000), 2); assert.equal(bandOf(bands, 499_999), 2); assert.equal(bandOf(bands, 500_000), 3); assert.equal(bandOf(bands, 12_000_000), 3);
+  const free = sizeBands({ ...CVD_DEFAULTS, stripRetailUsd: 75_000, stripWhaleUsd: 2_000_000 });
+  assert.equal(bandOf(free, 74_999), 1); assert.equal(bandOf(free, 75_000), 2); assert.equal(bandOf(free, 1_999_999), 2); assert.equal(bandOf(free, 2_000_000), 3);
 });
 
 test('a trade makes the row of its size light, for the instruments the aggregate counts and no others', () => {
@@ -62,6 +69,9 @@ test('a trade makes the row of its size light, for the instruments the aggregate
   assert.deepEqual(flashBands(bands, counted, []), []);
   const merged = sizeBands({ ...CVD_DEFAULTS, stripSmall: false });
   assert.deepEqual(flashBands(merged, counted, [trade('binance:BTCUSDT', 30_000)]), [0], 'with retail on one row a trade of 30K lights it');
+  const free = sizeBands({ ...CVD_DEFAULTS, stripRetailUsd: 75_000, stripWhaleUsd: 2_000_000 });
+  assert.deepEqual(flashBands(free, counted, [trade('binance:BTCUSDT', 80_000)]), [2], 'a line between the box edges: 80K is over 75K');
+  assert.deepEqual(flashBands(free, counted, [trade('binance:BTCUSDT', 1_500_000)]), [2]); assert.deepEqual(flashBands(free, counted, [trade('binance:BTCUSDT', 2_000_000)]), [3]);
 });
 
 test('a window is partial when under nine in ten of its minutes were recorded, and one lost minute is a clock edge, not a gap', () => {
@@ -132,8 +142,9 @@ test('the strip knows where it stands: rows from the answer, idle while it waits
   const counted = ['binance:BTCUSDT'], input = { flow: book, counted, nowSec: SEC, settings: settings(), scope: 'all' as const };
   const ready = buildStrip({ ...input, sizes: answer(60), state: 'ready' });
   assert.equal(ready.size.state, 'ready'); assert.equal(ready.window, '1H'); assert.equal(ready.heading, 'ALL VENUES');
-  assert.deepEqual(ready.size.rows.map(r => r.label), ['< 25K', '25K–100K', '100K–500K', '500K+']);
-  assert.deepEqual(ready.size.rows.map(r => r.range), ['< $25K', '$25K–$100K', '$100K–$500K', '$500K+'], 'a sentence says the dollars');
+  assert.deepEqual(ready.size.rows.map(r => r.label), ['< 25K', '25K–100K', '100K–500K', '≥ 500K'], 'lines at box edges are exact without lines of their own');
+  assert.deepEqual(ready.size.rows.map(r => r.range), ['< $25K', '$25K–$100K', '$100K–$500K', '≥ $500K'], 'a sentence says the dollars');
+  assert.ok(ready.size.rows.every(r => !r.approx));
   // the sample's buckets: band two holds buckets 1 and 2 = (2 + 3) thousand of buys and (4 + 6) thousand of sells
   assert.equal(ready.size.rows[1]!.buy, 5_000); assert.equal(ready.size.rows[1]!.sell, 10_000);
   assert.equal(ready.size.rows[3]!.buy, (6 + 7 + 8) * 1_000);
@@ -181,7 +192,7 @@ test('what the pointer is told on a row: the figures, the share, and what the re
   assert.deepEqual(text(flow).slice(0, 6), ['|Taker flow, 15m', '|ALL VENUES', 'Buys / sells|$2.7M / $900K', 'Net|+$1.8M', 'Buy share|75%', 'Recorded|11 of 15 minutes']);
   assert.match(flow.at(-1)!.text, /Part of this window was not recorded/); assert.equal(flow.find(l => l.label === 'Recorded')!.bold, true);
   const size = rowLines(data.size.rows[3]!, data);
-  assert.equal(size[0]!.text, 'Market orders $500K+, 1H'); assert.ok(size.some(l => l.label === 'Share of volume'));
+  assert.equal(size[0]!.text, 'Market orders ≥ $500K, 1H'); assert.ok(size.some(l => l.label === 'Share of volume'));
   assert.ok(size.some(l => l.label === 'Recorded' && l.text === '47 of 60 minutes'));
   const whole = buildStrip({ flow: book, counted: ['binance:BTCUSDT'], nowSec: SEC, settings: settings(), scope: 'all', sizes: answer(60), state: 'ready' });
   const clean = rowLines(whole.pulse[3]!, whole);
@@ -191,18 +202,46 @@ test('what the pointer is told on a row: the figures, the share, and what the re
   assert.deepEqual(sizeRows(sizeBands(CVD_DEFAULTS), null, 60).map(r => r.share), [null, null, null, null]);
 });
 
+test('a size between the box edges is exact where the answer carries its line, and otherwise drawn at the nearest edge and marked ≈', () => {
+  const book = new FlowBook(); feed(book, 'binance:BTCUSDT', 3_000, 1_000);
+  const free = settings({ stripRetailUsd: 75_000, stripWhaleUsd: 2_000_000 }), bands = sizeBands(free), cuts = bandCuts(bands);
+  assert.deepEqual(cuts, [75_000, 2_000_000]);
+  const fromFloor = { buy: (2 + 3 + 4 + 5 + 6 + 7 + 8) * 1_000, sell: (2 + 3 + 4 + 5 + 6 + 7 + 8) * 2_000 };
+  // the lines' own sums: 9K of buys and 13K of sells from 75K, 4K and 1K from 2M
+  const lined: SizesAnswer = { windows: askedWindows(60).map(m => window(m, m, m, { over: [9_000, 13_000, 4_000, 1_000] })) };
+  const exact = buildStrip({ flow: book, counted: ['binance:BTCUSDT'], nowSec: SEC, settings: free, scope: 'all', sizes: lined, state: 'ready' }).size.rows;
+  assert.deepEqual(exact.map(r => r.label), ['< 25K', '25K–75K', '75K–2M', '≥ 2M']);
+  assert.ok(exact.every(r => !r.approx));
+  assert.deepEqual(exact.map(r => [r.buy, r.sell]), [[1_000, 2_000], [fromFloor.buy - 9_000, fromFloor.sell - 13_000], [9_000 - 4_000, 13_000 - 1_000], [4_000, 1_000]]);
+  // no lines in the answer (an older server, or minutes not filled in): 75K is taken at 100K and 2M at 1M, the nearest edges, and said
+  const boxes = buildStrip({ flow: book, counted: ['binance:BTCUSDT'], nowSec: SEC, settings: free, scope: 'all', sizes: answer(60), state: 'ready' });
+  const rows = boxes.size.rows;
+  assert.deepEqual(rows.map(r => r.label), ['< 25K', '≈25K–75K', '≈75K–2M', '≈≥ 2M']); assert.deepEqual(rows.map(r => !!r.approx), [false, true, true, true]);
+  assert.deepEqual(rows.map(r => r.buy), [1_000, 2_000 + 3_000, 4_000 + 5_000 + 6_000, 7_000 + 8_000]);
+  assert.ok(rowLines(rows[1]!, boxes).some(l => /nearest box edge/.test(l.text))); assert.equal(rowLines(rows[0]!, boxes).some(l => /nearest box edge/.test(l.text)), false);
+  // the strip's question asks for exactly those lines
+  assert.deepEqual(sizeRows(bands, window(60, 60, 60, { over: [9_000, 13_000] }), 60, [75_000]).map(r => !!r.approx), [false, false, true, true], 'only the line asked for is exact');
+});
+
 test('the strip\'s settings: the Bar stats limits to start with, damaged saves repaired, and the limits kept apart', () => {
   assert.deepEqual([CVD_DEFAULTS.strip, CVD_DEFAULTS.stripSmall, CVD_DEFAULTS.stripBlink], [true, true, true]);
-  const read = (saved: unknown) => readCvd(saved);
-  assert.equal(read(undefined).stripRetailMax, 2); assert.equal(read(undefined).stripWhaleMin, 5);
-  assert.equal(read({ stripRetailMax: 4, stripWhaleMin: 6 }).stripWhaleMin, 6);
-  const crossed = read({ stripRetailMax: 5, stripWhaleMin: 2 });
-  assert.ok(crossed.stripWhaleMin > crossed.stripRetailMax, 'whales start above retail');
-  assert.equal(read({ stripRetailMax: 99 }).stripRetailMax, 6); assert.equal(read({ stripRetailMax: 'x', stripWhaleMin: NaN }).stripRetailMax, 2);
-  assert.equal(read({ stripWhaleMin: 99 }).stripWhaleMin, 7); assert.equal(read({ strip: 'yes', stripBlink: 1, stripSmall: null }).strip, true, 'a value of the wrong kind is the default');
+  const read = (saved: unknown) => readCvd(saved), sizes = (saved: unknown) => { const s = read(saved); return [s.stripRetailUsd, s.stripWhaleUsd]; };
+  assert.deepEqual(sizes(undefined), [100_000, 500_000]);
+  assert.deepEqual(sizes({ stripRetailUsd: 75_000, stripWhaleUsd: 2_000_000 }), [75_000, 2_000_000], 'any size from the floor');
+  assert.deepEqual(sizes({ stripRetailUsd: 1_000_000, stripWhaleUsd: 200_000 }), [1_000_000, 1_000_000], 'whales never start under retail');
+  assert.deepEqual(sizes({ stripRetailUsd: 10_000, stripWhaleUsd: 2e10 }), [100_000, 500_000], 'under the floor or over the largest: the default');
+  assert.deepEqual(sizes({ stripRetailUsd: 'x', stripWhaleUsd: NaN }), [100_000, 500_000]);
+  // a save from when the sizes were box numbers: retail up to box i is under the next box's edge, whales from box i start at its edge
+  assert.deepEqual(sizes({ stripRetailMax: 4, stripWhaleMin: 6 }), [500_000, 1_000_000]);
+  assert.deepEqual(sizes({ stripRetailMax: 0 }), [25_000, 500_000]);
+  assert.deepEqual(sizes({ stripRetailMax: 5, stripWhaleMin: 2 }), [1_000_000, 1_000_000], 'crossed boxes: retail under 1M, whales from it');
+  assert.deepEqual(sizes({ stripRetailMax: 99, stripWhaleMin: 99 }), [100_000, 500_000]);
+  assert.deepEqual(sizes({ stripRetailUsd: 75_000, stripRetailMax: 4 }), [75_000, 500_000], 'the size wins over the old box');
+  assert.deepEqual(sizes(read({ stripRetailMax: 4, stripWhaleMin: 6 })), [500_000, 1_000_000], 'and a migrated save does not move again');
+  assert.equal(read({ strip: 'yes', stripBlink: 1, stripSmall: null }).strip, true, 'a value of the wrong kind is the default');
   assert.equal(read({ strip: false }).strip, false);
   // changing only the strip's own settings leaves the ranking key alone, and changing one of the ranking's does not
   const base = settings();
-  for (const patch of [{ strip: false }, { stripRetailMax: 4, stripWhaleMin: 6 }, { stripSmall: false }, { stripBlink: false }, { bursts: false }] satisfies Partial<CvdSettings>[]) assert.equal(rankingKey({ ...base, ...patch }), rankingKey(base), JSON.stringify(patch));
+  for (const patch of [{ strip: false }, { stripRetailUsd: 75_000, stripWhaleUsd: 2_000_000 }, { stripSmall: false }, { stripBlink: false }, { bursts: false }] satisfies Partial<CvdSettings>[]) assert.equal(rankingKey({ ...base, ...patch }), rankingKey(base), JSON.stringify(patch));
   for (const patch of [{ rank: '24h' }, { top: 5 }, { span: '4h' }, { pinned: ['okx'] }, { rebase: false }, { quietFlag: false }] satisfies Partial<CvdSettings>[]) assert.notEqual(rankingKey({ ...base, ...patch }), rankingKey(base), JSON.stringify(patch));
 });

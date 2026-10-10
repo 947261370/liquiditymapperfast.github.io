@@ -11,7 +11,9 @@ import { buildFamilies } from '../cvd/families.ts';
 import { flowWindow } from '../cvd/window.ts';
 import { MAX_PINNED, rankingKey } from '../cvd/settings.ts';
 import { venueLabel } from '../venues.ts';
-import { selectRow, switchRow, numberRow, togglePanel, note, heading, type Panel } from '../ui.ts';
+import { selectRow, sizeRow, switchRow, numberRow, togglePanel, note, heading, type Panel } from '../ui.ts';
+import { COMMON_SIZES, SIZE_FLOOR_USD, SIZE_MAX_USD, sizeText } from '../sizes.ts';
+import { scaledUsd, unscaledUsd } from '../coin.ts';
 import type { AppState, Store } from '../store.ts';
 import type { Hub } from '../hub.ts';
 import type { View } from '../view.ts';
@@ -24,7 +26,6 @@ import { laneColors, type LaneColors } from '../cvd/colors.ts';
 import { PriceTrack, type PriceColumns } from '../cvd/price.ts';
 import type { BurstEvent } from '../cvd/burst.ts';
 import { burstSizeRows, panelSwitchRow } from '../sound/panel.ts';
-import { sizeBucketLabels } from './bar-stats.ts';
 import { CvdStrip } from './cvd-strip.ts';
 import type { Print } from '../prints.ts';
 import { t } from '../i18n.ts';
@@ -228,16 +229,18 @@ export class CvdPane {
     );
   }
 
-  /** The rows of dots above the exchanges: whether they show, which trade sizes they split the trades into (the Bar stats' limits are the starting values), and the blink. */
+  /** The rows of dots above the exchanges: whether they show, the sizes they split the trades at (the Bar stats' sizes are the starting values), and the blink. */
   #stripSettings(c: CvdSettings): HTMLElement[] {
-    const buckets = (from: number, to: number): [string, string][] => sizeBucketLabels().slice(from, to + 1).map((label, i) => [String(from + i), label]);
-    // The two limits keep apart, as they do in the Bar stats; the panel is drawn again so the other one shows what it was moved to.
+    // Whales never start under retail, as in the Bar stats; the panel is drawn again so the other one shows what it was moved to.
     const again = (): void => this.#panel?.render((_tools, body) => this.#buildSettings(body));
+    const floor = scaledUsd(SIZE_FLOOR_USD), presets = COMMON_SIZES.map(scaledUsd), below = t('From {min}: smaller orders are kept only as one sum.', { min: `$${sizeText(floor)}` });
     return [
       heading(t('Dot rows')),
       switchRow(t('Show the dot rows'), t('Buys against sells over the last minutes, and by market order size, above the exchanges.'), c.strip, v => this.#set({ strip: v })),
-      selectRow(t('Retail up to'), t('The dot rows put market orders up to this size together.'), buckets(0, 6), String(c.stripRetailMax), v => { const r = Number(v); this.#set({ stripRetailMax: r, stripWhaleMin: Math.max(c.stripWhaleMin, r + 1) }); again(); }),
-      selectRow(t('Whales from'), t('The dot rows put market orders of this size and above on their last row.'), buckets(1, 7), String(c.stripWhaleMin), v => { const w = Number(v); this.#set({ stripWhaleMin: w, stripRetailMax: Math.min(c.stripRetailMax, w - 1) }); again(); }),
+      sizeRow(t('Retail'), t('The dot rows put market orders under this size together.'), { sign: '<', value: scaledUsd(c.stripRetailUsd), presets, min: floor, max: scaledUsd(SIZE_MAX_USD), hint: below },
+        v => { const r = unscaledUsd(v); this.#set({ stripRetailUsd: r, stripWhaleUsd: Math.max(c.stripWhaleUsd, r) }); again(); }),
+      sizeRow(t('Whales'), t('The dot rows put market orders of this size and over on their last row.'), { sign: '≥', value: scaledUsd(c.stripWhaleUsd), presets, min: floor, max: scaledUsd(SIZE_MAX_USD), hint: below },
+        v => { const w = unscaledUsd(v); this.#set({ stripWhaleUsd: w, stripRetailUsd: Math.min(c.stripRetailUsd, w) }); again(); }),
       switchRow(t('Smallest orders on their own row'), t('Puts the market orders under $25K on a row of their own instead of with the retail ones.'), c.stripSmall, v => this.#set({ stripSmall: v })),
       switchRow(t('Blink on orders'), t('The leading dot of a size row lights for a moment when a market order of that size prints. It stays still when the system asks for less motion.'), c.stripBlink, v => this.#set({ stripBlink: v })),
     ];

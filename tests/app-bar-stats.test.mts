@@ -58,13 +58,30 @@ test('trade stats exist only for bars recorded with them and size buckets split 
   assert.deepEqual(compute('buys'), [2, null, 1]);
   assert.deepEqual(compute('sells'), [1, null, 1]);
   assert.deepEqual(compute('avgTrade'), [(100 + 5_000_000 + 60_000) / 3, null, 105_000 / 2]);
-  assert.deepEqual(compute('deltaRetail'), [100 - 60_000, null, -25_000], 'buckets 0-2 by default');
-  assert.deepEqual(compute('deltaWhales'), [5_000_000, null, 80_000], 'buckets 5-7 by default');
-  assert.deepEqual(compute('deltaRetail', { retailMax: 1 }), [100, null, -25_000], 'the retail limit moves with the option');
-  assert.deepEqual(compute('deltaWhales', { whaleMin: 7 }), [5_000_000, null, 0]);
+  assert.deepEqual(compute('deltaRetail'), [100 - 60_000, null, -25_000], 'under $100K by default: the first three boxes');
+  assert.deepEqual(compute('deltaWhales'), [5_000_000, null, 80_000], 'from $500K by default: the last three');
+  assert.deepEqual(compute('deltaRetail', { retailUsd: 50_000 }), [100, null, -25_000], 'the retail size moves with the option');
+  assert.deepEqual(compute('deltaWhales', { whaleUsd: 5_000_000 }), [5_000_000, null, 0]);
   assert.deepEqual(compute('cvdRetail'), [-59_900, null, -84_900], 'running sum skips bars without stats');
   assert.deepEqual(compute('cvdWhales'), [5_000_000, null, 5_080_000]);
   assert.equal(zeros().length, 8);
+});
+
+test('a size between the box edges is exact where the bars carry its line, and taken at the nearest edge (with ≈) where they do not', () => {
+  // The bars were loaded with lines at $75K and $2M: their sums are the orders themselves.
+  const lined = bars.map((b, i) => i === 1 ? b : { ...b, over: i === 0 ? [5_000_000, 0, 5_000_000, 0] : [80_000, 0, 0, 0] });
+  const options = { ...DEFAULT_STAT_OPTIONS, retailUsd: 75_000, whaleUsd: 2_000_000 };
+  const at = (id: string, cuts?: number[], list = lined) => { const i: StatInput = { bars: list, step: 5, candles, oi, options, ...(cuts ? { cuts } : {}) }; return { values: statDef(id)!.compute(i), approx: statDef(id)!.approx?.(i) ?? false }; };
+  assert.deepEqual(at('deltaRetail', [75_000, 2_000_000]), { values: [100 - 60_000, null, -25_000], approx: false }, 'retail: everything less the orders from $75K');
+  assert.deepEqual(at('deltaWhales', [75_000, 2_000_000]), { values: [5_000_000, null, 0], approx: false });
+  // Without the lines (an older server): the boxes at the nearest edge, $100K and $1M, and the rows say they are about.
+  assert.deepEqual(at('deltaRetail', undefined, bars), { values: [100 - 60_000, null, -25_000], approx: true });
+  assert.deepEqual(at('deltaWhales', undefined, bars), { values: [5_000_000, null, 0], approx: true });
+  assert.equal(at('deltaRetail', [50_000, 2_000_000]).approx, true, 'lines for other sizes are not this one\'s');
+  assert.equal(statDef('delta')!.approx, undefined, 'a statistic of the whole bar is never about');
+  // At a box edge the boxes are exact, with or without the lines.
+  const edge = { ...DEFAULT_STAT_OPTIONS, retailUsd: 100_000, whaleUsd: 1_000_000 };
+  assert.equal(statDef('cvdRetail')!.approx!({ bars, step: 5, candles, oi, options: edge }), false);
 });
 
 test('candle and open-interest stats read the bar of the same period, in the unit chosen', () => {
@@ -106,10 +123,16 @@ test('colour scale: log between the visible 2nd and 99th percentile, so one outl
 
 test('bar statistics options from storage or a file: each within what the settings allow, else its default', () => {
   assert.deepEqual(readStatOptions(undefined), DEFAULT_STAT_OPTIONS);
-  const good = { imbRatio: 2.5, imbMinUsd: 10_000, stackedN: 4, imbZeros: true, retailMax: 1, whaleMin: 6, oiUnits: 'usd', cells: 'text' } as const;
+  const good = { imbRatio: 2.5, imbMinUsd: 10_000, stackedN: 4, imbZeros: true, retailUsd: 75_000, whaleUsd: 2_000_000, oiUnits: 'usd', cells: 'text' } as const;
   assert.deepEqual(readStatOptions(good), good);
-  const bad = readStatOptions({ imbRatio: 0.5, imbMinUsd: -1, stackedN: 2.5, imbZeros: 'yes', retailMax: 9, whaleMin: -1, oiUnits: 'eur', cells: 'neon', extra: 1 });
+  const bad = readStatOptions({ imbRatio: 0.5, imbMinUsd: -1, stackedN: 2.5, imbZeros: 'yes', retailUsd: 9, whaleUsd: -1, oiUnits: 'eur', cells: 'neon', extra: 1 });
   assert.deepEqual(bad, DEFAULT_STAT_OPTIONS);
-  assert.deepEqual([readStatOptions({ retailMax: 5, whaleMin: 3 }).retailMax, readStatOptions({ retailMax: 5, whaleMin: 3 }).whaleMin], [2, 5], 'whales must be above retail');
+  const crossed = readStatOptions({ retailUsd: 1_000_000, whaleUsd: 100_000 });
+  assert.deepEqual([crossed.retailUsd, crossed.whaleUsd], [100_000, 500_000], 'whales may not start under retail');
+  assert.deepEqual([readStatOptions({ retailUsd: 25_000, whaleUsd: 25_000 }).retailUsd, readStatOptions({ retailUsd: 25_000, whaleUsd: 25_000 }).whaleUsd], [25_000, 25_000], 'the floor, and the two sizes the same');
+  // A save from before the sizes were free holds box numbers: retail up to box 1 is under $50K, whales from box 6 start at $1M.
+  const old = readStatOptions({ retailMax: 1, whaleMin: 6 });
+  assert.deepEqual([old.retailUsd, old.whaleUsd], [50_000, 1_000_000]);
+  assert.deepEqual([readStatOptions({ retailMax: 7, whaleMin: 0 }).retailUsd, readStatOptions({ retailMax: 7, whaleMin: 0 }).whaleUsd], [100_000, 500_000], 'box numbers with no such edge are the defaults');
   assert.equal(readStatOptions({ stackedN: 1 }).stackedN, 3);
 });

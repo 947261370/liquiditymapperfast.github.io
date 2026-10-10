@@ -1,5 +1,6 @@
 import { HEIGHT_MODES, type HeightMode } from './layout.ts';
 import { DEFAULT_STAT_OPTIONS } from '../stat-options.ts';
+import { readSize, sizeFromBox } from '../sizes.ts';
 
 /** How much time the column shows: the map's own span, or a fixed one ending now. */
 export const CVD_SPANS = ['map', '5m', '15m', '1h', '4h', '24h'] as const;
@@ -33,16 +34,16 @@ export interface CvdSettings {
   /** Mark the bursts seen while the page is open on the exchange lines (the sizes are the flow sound's, `sounds.panels.flow`); off by default. */
   bursts: boolean;
   /**
-   * The strip of dot rows above the exchanges (buys against sells over the last minutes, and by trade size): whether it shows; the size
-   * bands it splits the trades into, as the numbers of the footprint's size buckets (retail is up to `stripRetailMax`, whales from
-   * `stripWhaleMin`, and the first bucket on a row of its own when `stripSmall`); and whether the leading dot of a size row blinks when
-   * a trade of that size prints. The Bar stats' own limits are the starting values.
+   * The strip of dot rows above the exchanges (buys against sells over the last minutes, and by trade size): whether it shows; the sizes
+   * it splits the trades at (retail under `stripRetailUsd`, whales from `stripWhaleUsd`, BTC's sizes from the floor up, see sizes.ts; and the
+   * orders under the floor on a row of their own when `stripSmall`); and whether the leading dot of a size row blinks when a trade of that
+   * size prints. The Bar stats' own sizes are the starting values.
    */
-  strip: boolean; stripRetailMax: number; stripWhaleMin: number; stripSmall: boolean; stripBlink: boolean;
+  strip: boolean; stripRetailUsd: number; stripWhaleUsd: number; stripSmall: boolean; stripBlink: boolean;
 }
 
 export const CVD_DEFAULTS: Readonly<CvdSettings> = { span: 'map', rank: '1h', top: 0, v: 2, heights: 'golden', auto: true, refreshMin: 1, pinned: [], quietFlag: true, rebase: true, bursts: false,
-  strip: true, stripRetailMax: DEFAULT_STAT_OPTIONS.retailMax, stripWhaleMin: DEFAULT_STAT_OPTIONS.whaleMin, stripSmall: true, stripBlink: true };
+  strip: true, stripRetailUsd: DEFAULT_STAT_OPTIONS.retailUsd, stripWhaleUsd: DEFAULT_STAT_OPTIONS.whaleUsd, stripSmall: true, stripBlink: true };
 
 /** The settings that decide which exchanges are rows and in what order: when only the others change, the rows stay where they are. */
 export const rankingKey = (c: CvdSettings): string => [c.span, c.rank, c.top, c.heights, c.auto, c.refreshMin, c.pinned.join(','), c.quietFlag, c.rebase].join('|');
@@ -63,8 +64,9 @@ function readPinned(s: Record<string, unknown>): string[] {
 export function readCvd(saved: unknown): CvdSettings {
   const s = (saved && typeof saved === 'object' ? saved : {}) as Record<string, unknown>, d = CVD_DEFAULTS;
   const top = s.v !== 2 && s.top === 8 ? 0 : bounded(s.top, 0, 32, d.top);
-  // Retail ends in one of the first seven buckets and whales start in a later one, whatever a damaged save says.
-  const stripRetailMax = bounded(s.stripRetailMax, 0, 6, d.stripRetailMax), stripWhaleMin = Math.max(stripRetailMax + 1, bounded(s.stripWhaleMin, 1, 7, d.stripWhaleMin));
+  // Sizes from the floor, whales never under retail, whatever a damaged save says; a save from before the sizes were free holds box numbers.
+  const stripRetailUsd = readSize(s.stripRetailUsd) ?? sizeFromBox(s.stripRetailMax, 1) ?? d.stripRetailUsd;
+  const stripWhaleUsd = Math.max(stripRetailUsd, readSize(s.stripWhaleUsd) ?? sizeFromBox(s.stripWhaleMin, 0) ?? d.stripWhaleUsd);
   return {
     span: oneOf(CVD_SPANS, s.span, d.span), rank: oneOf(RANK_WINDOWS, s.rank, d.rank), top: top > 0 && top < 3 ? 3 : top, v: 2,
     heights: oneOf(HEIGHT_MODES, s.heights, d.heights),
@@ -73,7 +75,7 @@ export function readCvd(saved: unknown): CvdSettings {
     quietFlag: typeof s.quietFlag === 'boolean' ? s.quietFlag : d.quietFlag,
     rebase: typeof s.rebase === 'boolean' ? s.rebase : d.rebase,
     bursts: typeof s.bursts === 'boolean' ? s.bursts : d.bursts,
-    strip: typeof s.strip === 'boolean' ? s.strip : d.strip, stripRetailMax, stripWhaleMin,
+    strip: typeof s.strip === 'boolean' ? s.strip : d.strip, stripRetailUsd, stripWhaleUsd,
     stripSmall: typeof s.stripSmall === 'boolean' ? s.stripSmall : d.stripSmall, stripBlink: typeof s.stripBlink === 'boolean' ? s.stripBlink : d.stripBlink,
   };
 }

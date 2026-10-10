@@ -357,6 +357,12 @@ ol.steps { margin: 6px 0 10px; padding-left: 20px; display: grid; gap: 8px; line
 .keylevel-grid input[type=checkbox] { margin: 0; width: 15px; height: 15px; accent-color: var(--ui); cursor: pointer; }
 .panel .field { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 14px; align-items: center; padding: 7px 8px; margin: 0 -8px; border-radius: var(--radius); }
 .panel .field > select, .panel .field > input[type=number] { width: 150px; }
+/* A size (ui.ts sizeRow): the sign, the value box and the menu of common sizes, together as wide as a select. */
+.size-ctl { display: flex; align-items: center; gap: 4px; width: 150px; }
+.size-ctl .size-sign { flex: none; width: 14px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+.size-ctl .size-value { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+.size-ctl .size-menu { flex: none; width: 34px; padding-left: 4px; padding-right: 0; }
+.size-hint { color: var(--warn, var(--muted)); }
 .panel .slider { display: flex; align-items: center; gap: 8px; width: 170px; }
 .panel .slider input { flex: 1; min-width: 0; accent-color: var(--ui); }
 .panel .slider output { min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }

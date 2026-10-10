@@ -18,6 +18,8 @@ export interface Bar {
   /** Recorded minutes inside the bar; a candle seen only in part has fewer than its length. Absent from servers that predate it. */
   minutes?: number;
   stats?: TradeStats;
+  /** USD of the market orders from each size line the bars were loaded with (`FootprintData.cuts`), bought then sold; absent where the source does not know them. */
+  over?: number[];
 }
 
 /** Trade stats from the wire: eight finite non-negative size buckets per side and integer counts, else none (the bar then has no trade statistics). */
@@ -29,10 +31,11 @@ export function validStats(value: unknown): TradeStats | undefined {
   return count(buyN) && count(sellN) && bucket(buy) && bucket(sell) ? { buyN, sellN, buy, sell } : undefined;
 }
 
-/** A bar from the server with its optional trade stats checked. */
-export function readBar(bar: Bar): Bar {
-  const { stats, ...rest } = bar, valid = validStats(stats);
-  return valid ? { ...rest, stats: valid } : rest;
+/** A bar from the server with its optional trade stats and size-line sums checked (two finite, non-negative sums for each of `cuts` lines). */
+export function readBar(bar: Bar, cuts = 0): Bar {
+  const { stats, over, ...rest } = bar, valid = validStats(stats);
+  const lines = cuts > 0 && Array.isArray(over) && over.length === 2 * cuts && over.every(x => typeof x === 'number' && Number.isFinite(x) && x >= 0) ? { over } : {};
+  return valid ? { ...rest, stats: valid, ...lines } : rest;
 }
 
 /**
@@ -131,6 +134,8 @@ export class FootprintData {
   /** Row step of the loaded data and the recorded finest step. */
   step = 0; fine = 0;
   bars = new Map<number, Bar>();
+  /** The size lines the bars were asked for (the coin's USD: the Bar stats' retail and whale sizes): each bar's `over` holds their sums. */
+  cuts: number[] = [];
   /** Bumped whenever `bars` is replaced, for what is worked out from them (the imbalance marks). */
   version = 0;
   #key = ''; #loadedAt = 0; #busy = false;
@@ -138,19 +143,21 @@ export class FootprintData {
   #context = ''; #request = 0;
 
   /** Start a refresh when the window, row size or timeframe changed or the data is older than 5 s. */
-  ensure(inst: string, tf: string, view: Bounds, rowStep: number, load: (inst: string, tf: string, from: number, to: number, rowStep: number) => Promise<FootprintResponse>, onLoad: () => void): void {
+  ensure(inst: string, tf: string, view: Bounds, rowStep: number, load: (inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[]) => Promise<FootprintResponse>, onLoad: () => void, cuts: readonly number[] = []): void {
     const tfMs = TIMEFRAMES[tf] ?? 3_600_000;
     // Rows of another market or timeframe are not rows of this one, whatever the window: they go now, rather than being drawn until the new
     // ones come (or for good, if they never do). A request still out for the old context is left to finish, and its answer is ignored.
     const context = `${inst}|${tf}`;
     if (context !== this.#context) { this.#context = context; this.bars = new Map(); this.step = 0; this.fine = 0; this.#key = ''; this.#busy = false; this.version++; }
-    const key = `${context}|${rowStep}|${Math.floor(view.t0 / tfMs)}|${Math.floor(view.t1 / tfMs)}`;
+    // Other size lines are another question: the bars' sums are for the lines asked.
+    const key = `${context}|${rowStep}|${Math.floor(view.t0 / tfMs)}|${Math.floor(view.t1 / tfMs)}|${cuts.join(',')}`;
     if (this.#busy || (key === this.#key && performance.now() - this.#loadedAt < 5_000)) return;
     this.#busy = true; this.#key = key;
     const request = ++this.#request;
-    load(inst, tf, view.t0 - tfMs, view.t1 + tfMs, rowStep).then(body => {
+    const asked = [...cuts];
+    load(inst, tf, view.t0 - tfMs, view.t1 + tfMs, rowStep, asked).then(body => {
       if (request !== this.#request) return;
-      this.step = body.step; this.fine = body.fine; this.bars = new Map(body.bars.map(bar => [bar.t, readBar(bar)])); this.version++; this.#loadedAt = performance.now(); onLoad();
+      this.step = body.step; this.fine = body.fine; this.cuts = asked; this.bars = new Map(body.bars.map(bar => [bar.t, readBar(bar, asked.length)])); this.version++; this.#loadedAt = performance.now(); onLoad();
     }).catch(error => {
       if (request !== this.#request) return;
       // Asked again in five seconds, not on every frame.
