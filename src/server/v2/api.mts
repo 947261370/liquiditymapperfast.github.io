@@ -9,11 +9,11 @@ import { DepthRecorder, COLUMN_MS, SAMPLE_MS, STALE_MS } from './recorder.mts';
 import { SqliteColumnStore } from './store.mts';
 import { encodeColumns, encodeLevels } from './wire.mts';
 import { FootprintRecorder } from './footprint.mts';
-import { MAX_PROFILE_INSTRUMENTS, MAX_RANGE_INSTRUMENTS, MAX_SIZES_MINUTES, MAX_SIZES_WINDOWS, MAX_VALUE_AREA_SPAN_MS, MAX_VALUE_AREA_WINDOWS, type TradeLike } from '../../shared/footprint.ts';
+import { MAX_CUT_USD, MAX_CUTS, MAX_PROFILE_INSTRUMENTS, MAX_RANGE_INSTRUMENTS, MAX_SIZES_MINUTES, MAX_SIZES_WINDOWS, MAX_VALUE_AREA_SPAN_MS, MAX_VALUE_AREA_WINDOWS, parseCuts, type TradeLike } from '../../shared/footprint.ts';
 import { RecordedBefore } from '../../shared/restart.ts';
 import { FLOW_SEC, FlowRecorder, encodeFlowFrame, encodeFlowMinutes } from './flow.mts';
 import { FlowSources } from './flow-sources.mts';
-import { PRINT_FLOOR_USD, PRINTS_PER_ANSWER, PrintStream, toWire } from './prints.mts';
+import { PRINT_FLOOR_USD, PRINTS_PER_ANSWER, PrintStream, toWire, type Print } from './prints.mts';
 import { LIQUIDATION_FLOOR_USD, LIQUIDATIONS_PER_ANSWER, LiquidationStream, toWire as liquidationWire } from './liquidations.mts';
 import { OrderBuilder, orderRow, type TakenFill } from '../../shared/orders.ts';
 import { AbsorptionRecorder, GROUP_FLOOR_USD, GROUPS_PER_MINUTE, ABSORPTION_WINDOW_MS, MAX_ABSORPTION_INSTRUMENTS } from './absorption.mts';
@@ -31,6 +31,8 @@ export interface V2Handle {
 }
 
 const MAX_COLUMN_SPAN_MS = 8 * 24 * 3_600_000;
+/** The stretch of prints one turn of the event loop fills the footprint's lists from (see `fillLists` below). */
+const FILL_STEP_MS = 10 * 60_000;
 /** The most flow history one request may ask for: what the recorder keeps in memory, and a few thousand seconds per instrument cost 8 bytes each. */
 const MAX_FLOW_SPAN_MS = 36 * 3_600_000, MAX_FLOW_INSTRUMENTS = 40;
 /** The most a minute-totals request may span: everything the store keeps (a week), at 20 bytes a minute per instrument. */
@@ -68,6 +70,7 @@ function windowOf(url: URL, defaultTo: number, defaultSpan: number): { from: num
   return Number.isSafeInteger(from) && Number.isSafeInteger(to) && from >= 0 && to > from ? { from, to } : null;
 }
 const BAD_WINDOW = 'from and to must be milliseconds, from before to and neither negative';
+const BAD_CUTS = (floor: number): string => `cuts must be up to ${MAX_CUTS} sizes in USD, each from ${floor} to ${MAX_CUT_USD}`;
 const BAD_SERIES = 'inst and a supported tf are required';
 
 /** Attach the v2 data plane (depth recorder, live WebSocket, series endpoints) to a running local server. */
@@ -271,7 +274,9 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     const span = windowOf(url, Date.now() + tfMs, 200 * tfMs); if (!span) return sendJson(res, { error: BAD_WINDOW }, 400);
     const rows = num(url.searchParams.get('rows'), 0);
     if (!(rows >= 0)) return sendJson(res, { error: 'rows must not be negative' }, 400);
-    sendJson(res, { instrumentId: id, tf, ...footprint.query(id, span.from, span.to, tfMs, rows) });
+    const cuts = parseCuts(url.searchParams.get('cuts'), footprint.floorUsd);
+    if (!cuts) return sendJson(res, { error: BAD_CUTS(footprint.floorUsd) }, 400);
+    sendJson(res, { instrumentId: id, tf, ...footprint.query(id, span.from, span.to, tfMs, rows, cuts) });
   };
   const liquidationsRoute = (url: URL, res: ServerResponse) => {
     // As the prints: a window longer than what is kept is cut to its last eight days, never refused.
@@ -309,7 +314,9 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     const windows = (url.searchParams.get('minutes') ?? '').split(',').filter(Boolean).map(Number);
     if (!ids.length || ids.length > MAX_SIZES_INSTRUMENTS) return sendJson(res, { error: `inst must name 1 to ${MAX_SIZES_INSTRUMENTS} instruments` }, 400);
     if (!windows.length || windows.length > MAX_SIZES_WINDOWS || windows.some(m => !Number.isInteger(m) || m < 1 || m > MAX_SIZES_MINUTES)) return sendJson(res, { error: `minutes must be 1 to ${MAX_SIZES_WINDOWS} whole numbers from 1 to ${MAX_SIZES_MINUTES}` }, 400);
-    sendJson(res, footprint.sizes(ids, windows));
+    const cuts = parseCuts(url.searchParams.get('cuts'), footprint.floorUsd);
+    if (!cuts) return sendJson(res, { error: BAD_CUTS(footprint.floorUsd) }, 400);
+    sendJson(res, footprint.sizes(ids, windows, cuts));
   };
   /**
    * Absorption candidates for some instruments over a window: per instrument the largest first, at least its `min` credit, at most `limit`;
@@ -398,6 +405,28 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
       markets: [...(s.markets ?? []), ...extra.markets()], layers: s.layers, layerMeta: s.layerMeta, statuses, steps: Object.fromEntries(recorder.steps), recorded: recorder.coverage(), columnMs: COLUMN_MS, timeframes: Object.keys(TIMEFRAMES) });
   };
 
+  /**
+   * The footprint's lists of large orders for the minutes recorded before they were kept (see `FootprintRecorder.fillLists`), filled from the
+   * prints ten minutes per turn of the event loop, newest first, once the server is up: a week of them in one read held the loop for 12 s.
+   * In memory only (those minutes age out within the week). Until a minute has its list, a size line through it falls back to the boxes.
+   */
+  let closed = false;
+  if (persist) {
+    const span = footprint.unknownLists();
+    if (span) {
+      const started = performance.now(); let to = span.to, filled = 0;
+      const turn = (): void => {
+        if (closed) return;
+        const from = Math.max(span.from, to - FILL_STEP_MS), list: Print[] = [];
+        prints.eachIn(from, to, p => list.push(p));
+        filled += footprint.fillLists(from, to, list); to = from;
+        if (to > span.from) setImmediate(turn);
+        else console.log(`footprint: lists of large orders filled for ${filled} minutes in ${((performance.now() - started) / 1000).toFixed(1)} s`);
+      };
+      setImmediate(turn);
+    }
+  }
+
   return {
     recorder, footprint, prints, liquidations, flow, absorption, extra,
     degradedVenues() { return new Map([...degraded].map(([id, reason]) => [id.split(':')[0]!, reason])); },
@@ -434,6 +463,7 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
       }
     },
     close() {
+      closed = true;
       clearInterval(loop); coins?.close(); (app.server as Server).off('upgrade', onUpgrade);
       for (const client of wss.clients) client.terminate();
       // Each part gets its turn even when one of them fails, so what can still be written is (the open minutes and the open orders are written here).

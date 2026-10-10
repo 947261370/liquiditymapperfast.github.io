@@ -1,6 +1,6 @@
 import type { ValuedBook } from './levels.ts';
 import { BROWSER_RETENTION_MS, COLUMN_MS, DepthRecorder, MIN_BIN_USD, SAMPLE_MS, STALE_MS, type Column, type ColumnStore } from './recorder.ts';
-import { FootprintRecorder, type FootprintStore, type ProfileAnswer, type RangeAnswer, type SizesAnswer, type ValueAreaAnswer } from './footprint.ts';
+import { FootprintRecorder, MAX_CUT_USD, MAX_CUTS, type FootprintStore, type ProfileAnswer, type RangeAnswer, type SizesAnswer, type ValueAreaAnswer } from './footprint.ts';
 import { PRINT_FLOOR_USD, PRINTS_PER_ANSWER, PrintStream, type Print, type PrintStore } from './prints.ts';
 import type { PrintSumsAnswer } from './print-sums.ts';
 import { LIQUIDATION_FLOOR_USD, LIQUIDATIONS_PER_ANSWER, LiquidationStream, type Liquidation, type LiquidationEvent } from './liquidations.ts';
@@ -143,6 +143,10 @@ export class Engine {
     this.recorder = new DepthRecorder({ store: columns, now, retentionMs, minBinUsd: MIN_BIN_USD * scale, mergedCacheBins: 500_000 });
     this.footprints = new FootprintRecorder(footprint, now, retentionMs, scale);
     this.printStream = new PrintStream(prints, now, retentionMs, PRINT_FLOOR_USD * scale);
+    // Minutes kept from before the footprint kept its lists of large orders get them from the prints kept beside them (a day at most, in
+    // memory already: at once, where a server spreads it out).
+    const unknown = this.footprints.unknownLists();
+    if (unknown) { const list: Print[] = []; this.printStream.eachIn(unknown.from, unknown.to, p => list.push(p)); this.footprints.fillLists(unknown.from, unknown.to, list); }
     this.liquidationStream = new LiquidationStream(null, now, retentionMs, LIQUIDATION_FLOOR_USD * scale);
     this.flows = new FlowRecorder(flow, now, Math.min(retentionMs, FLOW_MEMORY_MS), retentionMs);
     this.orders = new OrderBuilder(now);
@@ -311,7 +315,9 @@ export class Engine {
     return { from, to, stepMs: step, instruments: packColumns(ids.map(id => ({ instrumentId: id, step: this.recorder.steps.get(id) ?? 0, columns: this.recorder.query(id, from, to, step) }))) };
   }
 
-  footprint(instrumentId: string, tfMs: number, from: number, to: number, rowStep: number): FootprintAnswer { return this.footprints.query(instrumentId, from, to, tfMs, rowStep); }
+  footprint(instrumentId: string, tfMs: number, from: number, to: number, rowStep: number, cuts: readonly number[] = []): FootprintAnswer { return this.footprints.query(instrumentId, from, to, tfMs, rowStep, this.#cuts(cuts)); }
+  /** Size lines a question may draw (see `parseCuts`): any that are not are left out rather than refused, as the page asked for them itself. */
+  #cuts(cuts: readonly number[]): number[] { return cuts.filter(c => Number.isFinite(c) && c >= this.footprints.floorUsd * (1 - 1e-9) && c <= MAX_CUT_USD).slice(0, MAX_CUTS); }
 
   /** Absorption candidates for these instruments over [from, to) and the minutes since `since` (see AbsorptionRecorder.query). */
   absorptionHistory(ids: readonly string[], mins: readonly number[], from: number, to: number, limit: number, since: number): Promise<AbsorptionAnswer> { return this.absorption.query(ids, mins, from, to, limit, since); }
@@ -322,7 +328,7 @@ export class Engine {
   valueAreas(ids: readonly string[], windows: readonly { from: number; to: number }[], rowStep: number, share: number): ValueAreaAnswer { return this.footprints.valueAreas(ids, windows, rowStep, share); }
 
   /** The trades of these instruments added together by size over each of the last `windows` minutes (the page's strip). */
-  sizes(ids: readonly string[], windows: readonly number[]): SizesAnswer { return this.footprints.sizes(ids, windows); }
+  sizes(ids: readonly string[], windows: readonly number[], cuts: readonly number[] = []): SizesAnswer { return this.footprints.sizes(ids, windows, this.#cuts(cuts)); }
 
   /** Taker flow per second for each instrument over [from, to), from its first recorded minute in that range. */
   flow(ids: readonly string[], from: number, to: number): FlowFrame { return this.flows.frame(ids, from, to); }

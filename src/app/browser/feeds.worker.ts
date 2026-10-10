@@ -93,7 +93,7 @@ async function answer(call: RpcCall, run: Engine): Promise<{ result: unknown; tr
       const frame = run.columns(call.ids, call.from, call.to, call.stepMs);
       return { result: frame, transfer: frame.instruments.flatMap(set => [set.bins.buffer, set.bid.buffer, set.ask.buffer]) };
     }
-    case 'footprint': return { result: run.footprint(call.inst, call.tfMs, call.from, call.to, call.rowStep), transfer: [] };
+    case 'footprint': return { result: run.footprint(call.inst, call.tfMs, call.from, call.to, call.rowStep, call.cuts ?? []), transfer: [] };
     case 'prints': return { result: run.prints(call.from, call.to, call.minUsd), transfer: [] };
     case 'liquidations': return { result: run.liquidations(call.from, call.to, call.minUsd), transfer: [] };
     case 'printSums': return { result: run.printSums(call.ids, call.from, call.to, call.minUsd, call.stepMs), transfer: [] };
@@ -101,7 +101,7 @@ async function answer(call: RpcCall, run: Engine): Promise<{ result: unknown; tr
       const frame = run.flow(call.ids, call.from, call.to);
       return { result: frame, transfer: frame.instruments.flatMap(series => [series.buy.buffer as ArrayBuffer, series.sell.buffer as ArrayBuffer]) };
     }
-    case 'sizes': return { result: run.sizes(call.ids, call.windows), transfer: [] };
+    case 'sizes': return { result: run.sizes(call.ids, call.windows, call.cuts ?? []), transfer: [] };
     case 'profile': return { result: run.profile(call.ids, call.from, call.to, call.rowStep), transfer: [] };
     case 'range': return { result: run.range(call.ids, call.from, call.to, call.band, call.rowStep), transfer: [] };
     case 'valueAreas': return { result: run.valueAreas(call.ids, call.windows, call.rowStep, call.share), transfer: [] };

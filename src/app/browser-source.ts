@@ -219,13 +219,13 @@ export class BrowserSource implements DataSource, VenueControl {
     if (!answer) throw new Error('the browser engine answered the value-area question with something else');
     return answer;
   }
-  async sizes(ids: string[], windows: number[]): Promise<SizesAnswer> {
-    const answer = parseSizes(await this.#call({ method: 'sizes', ids, windows }), windows);
+  async sizes(ids: string[], windows: number[], cuts: readonly number[] = []): Promise<SizesAnswer> {
+    const answer = parseSizes(await this.#call({ method: 'sizes', ids, windows, cuts: [...cuts] }), windows, cuts.length);
     if (!answer) throw new Error('the browser engine answered the sizes question with something else');
     return answer;
   }
-  async footprint(inst: string, tf: string, from: number, to: number, rowStep: number): Promise<FootprintResponse> {
-    return this.#call({ method: 'footprint', inst, tfMs: TIMEFRAMES[tf] ?? 3_600_000, from, to, rowStep });
+  async footprint(inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[] = []): Promise<FootprintResponse> {
+    return this.#call({ method: 'footprint', inst, tfMs: TIMEFRAMES[tf] ?? 3_600_000, from, to, rowStep, cuts: [...cuts] });
   }
 
   // ---- VenueControl ---------------------------------------------------------------------------------------------------------------

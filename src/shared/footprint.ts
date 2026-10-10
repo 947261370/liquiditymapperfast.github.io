@@ -17,13 +17,43 @@ export const sizeBucket = (usd: number): number => { let bucket = 0; for (let i 
  * Market-order counts and USD by order size for a minute or a bar; only orders seen while recording contribute. An order is all the fills
  * of one market order (see `orders.ts`), counted in the minute of its first fill. `v` is `STATS_VERSION`: statistics written before
  * orders were rebuilt counted every fill as a trade (so a large order on Bybit was many small ones) and are not read any more.
+ *
+ * `big` is every order of the minute from the second bucket's edge up (the print floor, $25,000 for BTC), as signed USD: a buy positive, a
+ * sell negative. The boxes alone answer a question about sizes only at their edges; with the orders themselves a line can be drawn at any
+ * size from the floor (`over`). Absent: not known (a minute recorded before the lists were kept, until it is filled from the prints, see
+ * `fillLists`); empty: none.
  */
-export interface TradeStats { buyN: number; sellN: number; buy: number[]; sell: number[]; v?: number }
-/** The version of the statistics this recorder writes: 2 counts market orders. */
+export interface TradeStats { buyN: number; sellN: number; buy: number[]; sell: number[]; v?: number; big?: number[] }
+/** The version of the statistics this recorder writes: 2 counts market orders (the list of large ones is an optional addition, read by older code as nothing). */
 export const STATS_VERSION = 2;
+/** The list of a minute with no large order yet: one shared empty list, replaced at the first order (a week holds about 300,000 instrument-minutes). */
+const NO_BIG = Object.freeze([]) as unknown as number[];
 const emptyStats = (): TradeStats => ({ buyN: 0, sellN: 0, buy: new Array<number>(SIZE_EDGES.length).fill(0), sell: new Array<number>(SIZE_EDGES.length).fill(0), v: STATS_VERSION });
-/** Statistics of the version this recorder writes, or null (older ones, or none). */
-const current = (stats: TradeStats | null | undefined): TradeStats | null => stats && stats.v === STATS_VERSION ? stats : null;
+/** Statistics of the version this recorder writes, or null (older ones, or none); a list that is not one is dropped (the minute's list is then not known). */
+const current = (stats: TradeStats | null | undefined): TradeStats | null => {
+  if (!stats || stats.v !== STATS_VERSION) return null;
+  if (stats.big !== undefined && !(Array.isArray(stats.big) && stats.big.every(v => typeof v === 'number' && Number.isFinite(v) && v !== 0))) { const { big: _, ...rest } = stats; return rest; }
+  return stats.big?.length === 0 ? { ...stats, big: NO_BIG } : stats;
+};
+
+/** The most size lines one question may draw, and the largest. */
+export const MAX_CUTS = 4, MAX_CUT_USD = 1e12;
+/**
+ * The size lines of a question (`cuts=75000,2000000`): each a USD size from `floorUsd` (the second bucket's edge for the coin: what the lists
+ * hold) up to MAX_CUT_USD, at most MAX_CUTS of them. An empty or missing parameter is none; anything else is null (refused).
+ */
+export function parseCuts(raw: string | null, floorUsd: number): number[] | null {
+  if (raw === null || raw === '') return [];
+  const cuts = raw.split(',').map(Number);
+  return cuts.length <= MAX_CUTS && cuts.every(c => Number.isFinite(c) && c >= floorUsd * (1 - 1e-9) && c <= MAX_CUT_USD) ? cuts : null;
+}
+/** Add a minute's large orders to `over` ([buy from cut 0, sell from cut 0, buy from cut 1, ...]). */
+function addOver(over: number[], big: readonly number[], cuts: readonly number[]): void {
+  for (const v of big) {
+    const usd = Math.abs(v), side = v > 0 ? 0 : 1;
+    for (let k = 0; k < cuts.length; k++) if (usd >= cuts[k]!) over[2 * k + side]! += usd;
+  }
+}
 
 /**
  * The trades of some instruments added together over the last `minutes` whole minutes (the open minute is the first of them), as the page's
@@ -31,25 +61,32 @@ const current = (stats: TradeStats | null | undefined): TradeStats | null => sta
  * statistics: a minute nobody recorded is told apart from a minute with nothing in it only by the others having rows, and a minute recorded
  * before statistics were kept has rows and no statistics.
  */
-export interface SizesWindow { minutes: number; seen: number; stats: number; buyN: number; sellN: number; buy: number[]; sell: number[] }
+export interface SizesWindow {
+  minutes: number; seen: number; stats: number; buyN: number; sellN: number; buy: number[]; sell: number[];
+  /** USD of the orders from each size line asked for, bought then sold (see `addOver`); absent when a minute counted has no list (or none was asked). */
+  over?: number[];
+}
 export interface SizesAnswer { windows: SizesWindow[] }
 /** The most windows, and the longest, one question may ask for. */
 export const MAX_SIZES_WINDOWS = 6, MAX_SIZES_MINUTES = 1_440;
 
 /**
  * A sizes answer checked field by field against the windows that were asked for (same lengths, same order): the answer, or null when it is
- * anything else (an old server's error page, a cut-off body). Counts are whole numbers, USD are finite and not negative.
+ * anything else (an old server's error page, a cut-off body). Counts are whole numbers, USD are finite and not negative. A window's `over`
+ * is kept when it holds two sums for each of the `cuts` size lines asked for; one of another length (or a server that does not draw lines)
+ * leaves the window without it, and the reader falls back to the boxes.
  */
-export function parseSizes(value: unknown, windows: readonly number[]): SizesAnswer | null {
+export function parseSizes(value: unknown, windows: readonly number[], cuts = 0): SizesAnswer | null {
   const list = (value as { windows?: unknown } | null)?.windows;
   if (!Array.isArray(list) || list.length !== windows.length) return null;
   const whole = (v: unknown, max: number): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= max;
-  const usd = (v: unknown): v is number[] => Array.isArray(v) && v.length === SIZE_EDGES.length && v.every(x => typeof x === 'number' && Number.isFinite(x) && x >= 0);
+  const sums = (v: unknown, n: number): v is number[] => Array.isArray(v) && v.length === n && v.every(x => typeof x === 'number' && Number.isFinite(x) && x >= 0);
+  const usd = (v: unknown): v is number[] => sums(v, SIZE_EDGES.length);
   const out: SizesWindow[] = [];
   for (let i = 0; i < windows.length; i++) {
     const w = list[i] as Partial<SizesWindow> | null;
     if (!w || w.minutes !== windows[i] || !whole(w.seen, w.minutes) || !whole(w.stats, w.minutes) || w.stats > w.seen || !whole(w.buyN, Number.MAX_SAFE_INTEGER) || !whole(w.sellN, Number.MAX_SAFE_INTEGER) || !usd(w.buy) || !usd(w.sell)) return null;
-    out.push({ minutes: w.minutes, seen: w.seen, stats: w.stats, buyN: w.buyN, sellN: w.sellN, buy: [...w.buy], sell: [...w.sell] });
+    out.push({ minutes: w.minutes, seen: w.seen, stats: w.stats, buyN: w.buyN, sellN: w.sellN, buy: [...w.buy], sell: [...w.sell], ...(cuts > 0 && sums(w.over, 2 * cuts) ? { over: [...w.over] } : {}) });
   }
   return { windows: out };
 }
@@ -182,6 +219,8 @@ export interface FootprintBar {
   minutes: number;
   /** Present only when every recorded minute of the bar carried trade stats. */
   stats?: TradeStats;
+  /** USD of the orders from each size line asked for, bought then sold (see `addOver`); present only when every minute's list is known. */
+  over?: number[];
 }
 
 /**
@@ -198,7 +237,7 @@ type Bins = Map<number, Cell>;
 interface MinuteSum { buy: number; sell: number; lo: number; hi: number; counted: boolean }
 
 /** A copy of a minute's statistics, whole: a row waits in a queue (the browser's) while a late trade may still change the minute, and the row must stay what it was when it was queued. */
-const copyStats = (stats: TradeStats | undefined): TradeStats | null => stats ? { buyN: stats.buyN, sellN: stats.sellN, buy: [...stats.buy], sell: [...stats.sell], v: STATS_VERSION } : null;
+const copyStats = (stats: TradeStats | undefined): TradeStats | null => stats ? { buyN: stats.buyN, sellN: stats.sellN, buy: [...stats.buy], sell: [...stats.sell], v: STATS_VERSION, ...(stats.big ? { big: [...stats.big] } : {}) } : null;
 
 /**
  * The row a price falls in. A price that is a whole number of steps is a boundary and belongs to the row above it, but the division can come
@@ -309,7 +348,7 @@ export class FootprintRecorder {
       // A minute begun here carries statistics, which its orders fill in. A minute that was restored without statistics (recorded before
       // they were kept, or before they counted orders) stays without: counting only the orders that arrive now would give it statistics
       // that cover a fraction of its volume, and a bar would be passed off as complete on them.
-      if (!restored) { const stats = this.#minuteStats(id); if (!stats.has(minute)) stats.set(minute, emptyStats()); }
+      if (!restored) { const stats = this.#minuteStats(id); if (!stats.has(minute)) stats.set(minute, { ...emptyStats(), big: NO_BIG }); }
       this.#dirty.add(`${id}|${minute}`);
       accepted++;
     }
@@ -327,6 +366,8 @@ export class FootprintRecorder {
       if (!stats || !(order.usd > 0)) continue;
       const bucket = sizeBucket(order.usd / this.sizeScale);
       if (order.side === 'buy') { stats.buyN++; stats.buy[bucket]! += order.usd; } else { stats.sellN++; stats.sell[bucket]! += order.usd; }
+      // From the second bucket up the order itself is kept too (a minute without a list, restored from before they were kept, stays without).
+      if (bucket >= 1 && stats.big) { if (stats.big === NO_BIG) stats.big = []; stats.big.push(order.side === 'buy' ? order.usd : -order.usd); }
       const step = this.#steps.get(id), start = order.side === 'buy' ? order.lo ?? order.price : order.hi ?? order.price;
       const bins = this.#minutes.get(id)?.get(minute);
       if (step && bins && start !== undefined && start > 0 && this.#sums.get(id)?.get(minute)?.counted) {
@@ -363,9 +404,44 @@ export class FootprintRecorder {
   }
   close(): void { this.flush(true); this.#store?.close(); }
 
-  /** The trades of these instruments added together over each of the last `windows` minutes (see `SizesAnswer`), by this recorder's own clock. */
-  sizes(ids: readonly string[], windows: readonly number[]): SizesAnswer {
-    return sizesOf({ minutes: id => this.#minutes.get(id), stats: id => this.#stats.get(id) }, ids, windows, this.now());
+  /**
+   * The trades of these instruments added together over each of the last `windows` minutes (see `SizesAnswer`), by this recorder's own clock,
+   * with the orders from each of the `cuts` size lines (USD, from the second bucket's edge; see `parseCuts`).
+   */
+  sizes(ids: readonly string[], windows: readonly number[], cuts: readonly number[] = []): SizesAnswer {
+    return sizesOf({ minutes: id => this.#minutes.get(id), stats: id => this.#stats.get(id) }, ids, windows, this.now(), cuts);
+  }
+
+  /** The smallest size a line can be drawn at: the second bucket's edge for this coin (what the lists hold). */
+  get floorUsd(): number { return SIZE_EDGES[1]! * this.sizeScale; }
+
+  /**
+   * Give the minutes of [from, to) whose list of large orders is not known (recorded before the lists were kept) the one `prints` make:
+   * the large orders of every instrument in that stretch, each once (the print stream keeps every order from the same floor, rebuilt from
+   * the same fills; checked equal to the boxes to the dollar on the live recording, 2026-10-10). Kept in memory only: writing the minutes
+   * back would rewrite a week of rows. Returns how many minutes were given a list.
+   */
+  fillLists(from: number, to: number, prints: Iterable<{ id: string; t: number; side: 'buy' | 'sell'; usd: number }>): number {
+    const found = new Map<string, Map<number, number[]>>();
+    for (const p of prints) {
+      if (!(p.t >= from && p.t < to) || !(p.usd >= this.floorUsd * (1 - 1e-9))) continue;
+      let minutes = found.get(p.id); if (!minutes) { minutes = new Map(); found.set(p.id, minutes); }
+      const minute = Math.floor(p.t / MINUTE) * MINUTE, list = minutes.get(minute);
+      if (list) list.push(p.side === 'buy' ? p.usd : -p.usd); else minutes.set(minute, [p.side === 'buy' ? p.usd : -p.usd]);
+    }
+    let filled = 0;
+    for (const [id, minutes] of this.#stats) for (const [t, stats] of minutes) {
+      if (stats.big !== undefined || t < from || t >= to) continue;
+      stats.big = found.get(id)?.get(t) ?? NO_BIG; filled++;
+    }
+    return filled;
+  }
+
+  /** The stretch from the oldest to the newest minute whose list is not known (null when every list is), for `fillLists`. */
+  unknownLists(): { from: number; to: number } | null {
+    let from = Infinity, to = -Infinity;
+    for (const minutes of this.#stats.values()) for (const [t, stats] of minutes) if (stats.big === undefined) { if (t < from) from = t; if (t + MINUTE > to) to = t + MINUTE; }
+    return from < to ? { from, to } : null;
   }
 
   /** Traded volume by price for each of `ids` over the minutes that start in [from, to), rows merged to `rowStep` (see `ProfileAnswer`). */
@@ -461,20 +537,27 @@ export class FootprintRecorder {
     return { step: rowStep, share, windows: out };
   }
 
-  /** Bars of `tfMs` over [from, to), rows merged to `rowStep` (rounded to a multiple of the recorded step). */
-  query(id: string, from: number, to: number, tfMs: number, rowStep: number): { step: number; fine: number; bars: FootprintBar[] } {
+  /**
+   * Bars of `tfMs` over [from, to), rows merged to `rowStep` (rounded to a multiple of the recorded step), with the orders from each of the
+   * `cuts` size lines where every minute of the bar has its list.
+   */
+  query(id: string, from: number, to: number, tfMs: number, rowStep: number, cuts: readonly number[] = []): { step: number; fine: number; bars: FootprintBar[] } {
     const fine = this.#steps.get(id);
     if (!fine) return { step: 0, fine: 0, bars: [] };
     const factor = Math.max(1, Math.round(rowStep / fine)), step = fine * factor;
-    const bars = new Map<number, Map<number, [number, number]>>(), barStats = new Map<number, { stats: TradeStats; withStats: number; minutes: number }>();
+    const bars = new Map<number, Map<number, [number, number]>>(), barStats = new Map<number, { stats: TradeStats; withStats: number; minutes: number; over: number[]; known: boolean }>();
     for (const [t, bins] of this.#minutes.get(id) ?? []) {
       if (t < from || t >= to) continue;
       const key = Math.floor(t / tfMs) * tfMs;
       let rows = bars.get(key); if (!rows) { rows = new Map(); bars.set(key, rows); }
-      let acc = barStats.get(key); if (!acc) { acc = { stats: emptyStats(), withStats: 0, minutes: 0 }; barStats.set(key, acc); }
+      let acc = barStats.get(key); if (!acc) { acc = { stats: emptyStats(), withStats: 0, minutes: 0, over: new Array<number>(2 * cuts.length).fill(0), known: true }; barStats.set(key, acc); }
       acc.minutes++;
       const minuteStats = this.#stats.get(id)?.get(t);
-      if (minuteStats) { acc.withStats++; acc.stats.buyN += minuteStats.buyN; acc.stats.sellN += minuteStats.sellN; for (let i = 0; i < SIZE_EDGES.length; i++) { acc.stats.buy[i]! += minuteStats.buy[i]!; acc.stats.sell[i]! += minuteStats.sell[i]!; } }
+      if (minuteStats) {
+        acc.withStats++; acc.stats.buyN += minuteStats.buyN; acc.stats.sellN += minuteStats.sellN;
+        for (let i = 0; i < SIZE_EDGES.length; i++) { acc.stats.buy[i]! += minuteStats.buy[i]!; acc.stats.sell[i]! += minuteStats.sell[i]!; }
+        if (cuts.length) { if (minuteStats.big) addOver(acc.over, minuteStats.big, cuts); else acc.known = false; }
+      }
       for (const [bin, [buy, sell]] of bins) {
         const row = Math.floor(bin / factor), cell = rows.get(row) ?? [0, 0];
         cell[0] += buy; cell[1] += sell; rows.set(row, cell);
@@ -482,8 +565,8 @@ export class FootprintRecorder {
     }
     return { step, fine, bars: [...bars].sort((a, b) => a[0] - b[0]).map(([t, rows]) => {
       const list = [...rows].sort((a, b) => a[0] - b[0]).map(([row, [buy, sell]]): FootprintRow => [row * step, buy, sell]);
-      const acc = barStats.get(t);
-      return { t, rows: list, buyUsd: list.reduce((s, r) => s + r[1], 0), sellUsd: list.reduce((s, r) => s + r[2], 0), minutes: acc?.minutes ?? 0, ...(acc && acc.withStats === acc.minutes ? { stats: acc.stats } : {}) };
+      const acc = barStats.get(t), whole = acc !== undefined && acc.withStats === acc.minutes;
+      return { t, rows: list, buyUsd: list.reduce((s, r) => s + r[1], 0), sellUsd: list.reduce((s, r) => s + r[2], 0), minutes: acc?.minutes ?? 0, ...(acc && whole ? { stats: acc.stats } : {}), ...(acc && whole && cuts.length && acc.known ? { over: acc.over } : {}) };
     }) };
   }
 }
@@ -493,21 +576,23 @@ export class FootprintRecorder {
  * by this recorder's own clock, for all the instruments added together. The windows all end at the same minute, so one pass back over the
  * longest serves every one of them, and each minute is looked up by its key rather than found among a week of them.
  */
-export function sizesOf(recorder: { minutes(id: string): ReadonlyMap<number, unknown> | undefined; stats(id: string): ReadonlyMap<number, TradeStats> | undefined }, ids: readonly string[], windows: readonly number[], now: number): SizesAnswer {
+export function sizesOf(recorder: { minutes(id: string): ReadonlyMap<number, unknown> | undefined; stats(id: string): ReadonlyMap<number, TradeStats> | undefined }, ids: readonly string[], windows: readonly number[], now: number, cuts: readonly number[] = []): SizesAnswer {
   const open = Math.floor(now / MINUTE) * MINUTE, longest = windows.reduce((a, b) => Math.max(a, b), 0);
-  const out: SizesWindow[] = windows.map(minutes => ({ minutes, seen: 0, stats: 0, buyN: 0, sellN: 0, buy: new Array<number>(SIZE_EDGES.length).fill(0), sell: new Array<number>(SIZE_EDGES.length).fill(0) }));
+  const out = windows.map(minutes => ({ minutes, seen: 0, stats: 0, buyN: 0, sellN: 0, buy: new Array<number>(SIZE_EDGES.length).fill(0), sell: new Array<number>(SIZE_EDGES.length).fill(0), over: new Array<number>(2 * cuts.length).fill(0), known: true }));
   const books = ids.map(id => [recorder.minutes(id), recorder.stats(id)] as const);
-  const minute = emptyStats();
+  const minute = emptyStats(), over = new Array<number>(2 * cuts.length).fill(0);
   for (let back = 0; back < longest; back++) {
     const t = open - back * MINUTE;
-    let seen = false, withStats = false;
-    minute.buyN = 0; minute.sellN = 0; minute.buy.fill(0); minute.sell.fill(0);
+    let seen = false, withStats = false, known = true;
+    minute.buyN = 0; minute.sellN = 0; minute.buy.fill(0); minute.sell.fill(0); over.fill(0);
     for (const [rows, stats] of books) {
       if (rows?.has(t)) seen = true;
       const s = stats?.get(t);
       if (!s) continue;
       withStats = true; minute.buyN += s.buyN; minute.sellN += s.sellN;
       for (let i = 0; i < SIZE_EDGES.length; i++) { minute.buy[i]! += s.buy[i]!; minute.sell[i]! += s.sell[i]!; }
+      // Every instrument-minute counted must have its list, or the window's lines would leave its orders out.
+      if (cuts.length) { if (s.big) addOver(over, s.big, cuts); else known = false; }
     }
     if (!seen && !withStats) continue;
     for (const w of out) {
@@ -516,22 +601,26 @@ export function sizesOf(recorder: { minutes(id: string): ReadonlyMap<number, unk
       if (!withStats) continue;
       w.stats++; w.buyN += minute.buyN; w.sellN += minute.sellN;
       for (let i = 0; i < SIZE_EDGES.length; i++) { w.buy[i]! += minute.buy[i]!; w.sell[i]! += minute.sell[i]!; }
+      for (let i = 0; i < over.length; i++) w.over[i]! += over[i]!;
+      if (!known) w.known = false;
     }
   }
-  return { windows: out };
+  return { windows: out.map(({ over: lines, known, ...w }): SizesWindow => cuts.length && known ? { ...w, over: lines } : w) };
 }
 
 /** Stats as stored (`[buyN, sellN, buy, sell, version]` as JSON text) in the current version: the object when every field is valid, else null. */
 export function parseStats(text: string | null): TradeStats | null {
   if (!text) return null;
   try {
-    const [buyN, sellN, buy, sell, version] = JSON.parse(text) as [number, number, number[], number[], number?];
+    const [buyN, sellN, buy, sell, version, big] = JSON.parse(text) as [number, number, number[], number[], number?, unknown?];
     const count = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0;
     const bucket = (v: unknown): v is number[] => Array.isArray(v) && v.length === SIZE_EDGES.length && v.every(x => typeof x === 'number' && Number.isFinite(x) && x >= 0);
-    // Four fields are statistics from before orders were rebuilt (every fill a trade): not the same quantity, so they are not read.
-    return version === STATS_VERSION && count(buyN) && count(sellN) && bucket(buy) && bucket(sell) ? { buyN, sellN, buy, sell, v: STATS_VERSION } : null;
+    // Four fields are statistics from before orders were rebuilt (every fill a trade): not the same quantity, so they are not read. A sixth is
+    // the list of large orders (older code reads the first five and passes it over); one that is not a list leaves the minute's list unknown.
+    if (version !== STATS_VERSION || !count(buyN) || !count(sellN) || !bucket(buy) || !bucket(sell)) return null;
+    return current({ buyN, sellN, buy, sell, v: STATS_VERSION, ...(big !== undefined ? { big: big as number[] } : {}) });
   } catch { return null; }
 }
 
-/** Stats as the database stores them (see `parseStats`). */
-export const statsText = (stats: TradeStats): string => JSON.stringify([stats.buyN, stats.sellN, stats.buy, stats.sell, STATS_VERSION]);
+/** Stats as the database stores them (see `parseStats`): the list of large orders, when known, as a sixth element. */
+export const statsText = (stats: TradeStats): string => JSON.stringify(stats.big ? [stats.buyN, stats.sellN, stats.buy, stats.sell, STATS_VERSION, stats.big] : [stats.buyN, stats.sellN, stats.buy, stats.sell, STATS_VERSION]);

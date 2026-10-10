@@ -93,12 +93,13 @@ export interface DataSource {
   flow(ids: string[], from: number, to: number): Promise<FlowFrame>;
   /** The same flow a minute at a time, for windows older than the seconds the page holds; a source that keeps no older flow (the browser keeps a day) has none. */
   flowMinutes?(ids: string[], from: number, to: number): Promise<FlowMinutesFrame>;
-  footprint(inst: string, tf: string, from: number, to: number, rowStep: number): Promise<FootprintResponse>;
+  /** `cuts`: size lines (USD, from the print floor) whose orders each bar carries in `over` where the source has them (an older server leaves them out). */
+  footprint(inst: string, tf: string, from: number, to: number, rowStep: number, cuts?: readonly number[]): Promise<FootprintResponse>;
   /**
    * The trades of `ids` added together by size over each of the last `windows` minutes (up to and including the open one), in one answer: the
    * minutes two answers saw cannot be added, so a long list is never asked in parts. Rejects when the source cannot say (an older server).
    */
-  sizes(ids: string[], windows: number[]): Promise<SizesAnswer>;
+  sizes(ids: string[], windows: number[], cuts?: readonly number[]): Promise<SizesAnswer>;
   /** Traded volume by price for `ids` over the minutes that start in [from, to). Rejects when the source cannot say (an older server). */
   profile(ids: string[], from: number, to: number, rowStep: number): Promise<ProfileAnswer>;
   /** What happened in a selection: the minutes that start in [from, to), at the prices of `band` or at every price (see `RangeAnswer`). Rejects when the source cannot say (an older server). */

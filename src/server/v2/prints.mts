@@ -35,6 +35,11 @@ export class SqlitePrintStore implements PrintStore {
     const rows = this.#db.prepare(`SELECT ${COLUMNS} FROM prints WHERE t >= ? AND usd >= ?`).all(since, minUsd) as Row[];
     for (const row of rows) { const print = asPrint(row); if (print) take(print); }
   }
+  eachIn(from: number, to: number, take: (print: Print) => void): void {
+    // A short stretch at a time (the footprint's lists are filled ten minutes per turn after the server listens): a week from $25K is
+    // about 870,000 rows and 12 s in one read, too long to hold the event loop.
+    for (const row of this.#db.prepare(`SELECT ${COLUMNS} FROM prints WHERE t >= ? AND t < ?`).all(from, to) as Row[]) { const print = asPrint(row); if (print) take(print); }
+  }
   save(rows: Print[], expireBefore: number): void {
     const db = this.#db, insert = db.prepare('INSERT INTO prints (t, inst, side, price, usd, lo, hi, n) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
     db.exec('BEGIN');

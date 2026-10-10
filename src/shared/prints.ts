@@ -30,6 +30,8 @@ export interface PrintStore {
   query?(from: number, to: number, minUsd: number, limit: number): Print[];
   /** Every print since `since` from `minUsd`, once, in no set order: what the whale sums are built from when the stream starts. */
   each?(since: number, minUsd: number, take: (print: Print) => void): void;
+  /** Every print in [from, to), once, in no set order: what the footprint's lists of large orders are filled from (see `FootprintRecorder.fillLists`). */
+  eachIn?(from: number, to: number, take: (print: Print) => void): void;
   close(): void;
 }
 
@@ -124,6 +126,21 @@ export class PrintStream {
     }
     for (const p of this.#recent) if (p.t >= from && p.t < to && p.usd >= minUsd) out.push(p);
     return largestPrints(out, limit);
+  }
+
+  /**
+   * Every print in [from, to), each once: from the store when it can walk a stretch (it holds the whole retention), else from memory (the
+   * newest MEMORY_MAX). Prints not yet written are in memory, so a stretch reaching into them is walked there too.
+   */
+  eachIn(from: number, to: number, take: (print: Print) => void): void {
+    const firstUnsaved = this.#unsaved.reduce((a, p) => Math.min(a, p.t), Infinity), store = this.#store;
+    if (store?.eachIn) {
+      const seen = new Set<string>();
+      store.eachIn(from, to, p => { seen.add(`${p.id}|${p.t}|${p.price}|${p.usd}`); take(p); });
+      if (to > firstUnsaved) for (const p of this.#unsaved) if (p.t >= from && p.t < to && !seen.has(`${p.id}|${p.t}|${p.price}|${p.usd}`)) take(p);
+      return;
+    }
+    for (const p of this.#recent) if (p.t >= from && p.t < to) take(p);
   }
 
   /** The whale sums of `ids` in [from, to) from the size band at `minUsd` up, in steps of `stepMs` (null for a size that is not a band's edge). */

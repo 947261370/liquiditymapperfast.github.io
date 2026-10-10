@@ -14,12 +14,12 @@ import type { Coin } from '../../shared/coins.ts';
 export type RpcCall =
   | { method: 'bootstrap' }
   | { method: 'columns'; ids: string[]; from: number; to: number; stepMs: number }
-  | { method: 'footprint'; inst: string; tfMs: number; from: number; to: number; rowStep: number }
+  | { method: 'footprint'; inst: string; tfMs: number; from: number; to: number; rowStep: number; cuts?: number[] }
   | { method: 'prints'; from: number; to: number; minUsd?: number }
   | { method: 'liquidations'; from: number; to: number; minUsd?: number }
   | { method: 'printSums'; ids: string[]; from: number; to: number; minUsd: number; stepMs: number }
   | { method: 'flow'; ids: string[]; from: number; to: number }
-  | { method: 'sizes'; ids: string[]; windows: number[] }
+  | { method: 'sizes'; ids: string[]; windows: number[]; cuts?: number[] }
   | { method: 'profile'; ids: string[]; from: number; to: number; rowStep: number }
   | { method: 'range'; ids: string[]; from: number; to: number; band: { p0: number; p1: number } | null; rowStep: number }
   | { method: 'valueAreas'; ids: string[]; windows: { from: number; to: number }[]; rowStep: number; share: number }

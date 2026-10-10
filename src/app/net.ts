@@ -15,9 +15,11 @@ async function request(path: string): Promise<Response> {
   if (!response.ok) throw new Error(`${path} failed: ${response.status}`);
   return response;
 }
-/** Recorded history for one instrument and window, as the footprint draws it. */
-export async function getFootprint(inst: string, tf: string, from: number, to: number, rowStep: number): Promise<FootprintResponse> {
-  return (await request(`/api/v2/footprint?inst=${encodeURIComponent(inst)}&tf=${tf}&from=${Math.floor(from)}&to=${Math.ceil(to)}&rows=${rowStep}`)).json() as Promise<FootprintResponse>;
+/** The size lines of a question (USD, see `parseCuts`), whole dollars: none adds nothing, so an older server is asked what it was always asked. */
+const cutsParam = (cuts: readonly number[]): string => cuts.length ? `&cuts=${cuts.map(c => Math.round(c)).join(',')}` : '';
+/** Recorded history for one instrument and window, as the footprint draws it, with the orders from each size line in `cuts` where the server has them. */
+export async function getFootprint(inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[] = []): Promise<FootprintResponse> {
+  return (await request(`/api/v2/footprint?inst=${encodeURIComponent(inst)}&tf=${tf}&from=${Math.floor(from)}&to=${Math.ceil(to)}&rows=${rowStep}${cutsParam(cuts)}`)).json() as Promise<FootprintResponse>;
 }
 export const getBootstrap = async (): Promise<BootstrapState> => (await request('/api/v2/state')).json();
 export async function getCandles(inst: string, tf: string, from: number, to: number): Promise<CandleRow[]> {
@@ -60,10 +62,10 @@ export async function getFlowMinutes(ids: string[], from: number, to: number): P
  * The trades of the instruments added together by size over each of the last `windows` minutes, in one request (never split: the minutes two
  * answers saw cannot be added). An answer that is not exactly what was asked for (an older server's 404, a page of HTML, a cut-off body) is an error.
  */
-export async function getSizes(ids: string[], windows: number[]): Promise<SizesAnswer> {
-  const response = await fetch(`/api/v2/sizes?inst=${ids.map(encodeURIComponent).join(',')}&minutes=${windows.join(',')}`, { cache: 'no-store' });
+export async function getSizes(ids: string[], windows: number[], cuts: readonly number[] = []): Promise<SizesAnswer> {
+  const response = await fetch(`/api/v2/sizes?inst=${ids.map(encodeURIComponent).join(',')}&minutes=${windows.join(',')}${cutsParam(cuts)}`, { cache: 'no-store' });
   if (!response.ok) throw new Error(`sizes failed: ${response.status}`);
-  const answer = parseSizes(await response.json().catch(() => null), windows);
+  const answer = parseSizes(await response.json().catch(() => null), windows, cuts.length);
   if (!answer) throw new Error('sizes answered with something else');
   return answer;
 }
