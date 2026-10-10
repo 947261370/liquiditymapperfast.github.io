@@ -141,6 +141,10 @@ html[data-bar="compact"] .panel :is(button, select, input[type=number]) { min-he
 html[data-bar="compact"] .panel-tools button.help { width: 26px; height: 26px; min-height: 0; padding: 0; margin: 0; font-size: 13px; line-height: 24px; }
 html[data-bar="compact"] .panel .opt, html[data-bar="compact"] .panel .field { padding-top: 9px; padding-bottom: 9px; }
 html[data-bar="compact"] .panel .field > select, html[data-bar="compact"] .panel .field > input[type=number] { width: 140px; }
+/* A size box (ui.ts sizeControl): a finger's height, and 16 px text so the phone does not zoom in when it is typed into. */
+html[data-bar="compact"] .panel .size-ctl { width: 160px; }
+html[data-bar="compact"] .panel .size-ctl .size-value { min-height: 40px; font-size: 16px; }
+html[data-bar="compact"] .panel .size-ctl .size-menu { width: 40px; }
 html[data-bar="compact"] .panel .slider { width: 150px; }
 html[data-bar="compact"] .panel .slider input { height: 30px; }
 html[data-bar="compact"] .panel .switch { width: 48px; height: 30px; }
@@ -246,6 +250,8 @@ html[data-layout^="phone"] .pane-head .ctl:has(input[type=checkbox]) { flex-dire
 html[data-layout^="phone"] .pane-head .ctl input[type=checkbox] { width: 20px; height: 20px; margin: 0; }
 html[data-layout^="phone"] .pane-head :is(select, button:not(.help)) { font-size: 14px; min-height: 32px; padding: 0 8px; border-radius: var(--radius); }
 html[data-layout^="phone"] .pane-head button.help { width: 22px; height: 22px; margin: 0 2px; font-size: 12px; line-height: 20px; }
+html[data-layout^="phone"] .pane-head .ctl .size-ctl .size-value { width: 76px; min-height: 32px; font-size: 16px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+html[data-layout^="phone"] .pane-head .ctl .size-ctl .size-menu { width: 30px; padding: 0 2px; }
 /* The Order Book's own header: the tab already says "Book", and its three choices share one row. */
 html[data-layout^="phone"] .pane.ladder .pane-head { flex-wrap: nowrap; padding-left: 8px; gap: 6px; }
 html[data-layout^="phone"] .pane.ladder .pane-head strong, html[data-layout^="phone"] .pane.ladder .recenter-btn { display: none; }

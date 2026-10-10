@@ -17,7 +17,7 @@ import type { InfoLine } from '../infobox.ts';
 import { barAt, columnAt, depthCardLines, depthColumns, depthKey, ltCardLines, oiCardLines, oiTail, readAt, slotAt } from './pane-cards.ts';
 import type { StatOptions } from '../stat-options.ts';
 import { el } from '../dom.ts';
-import { button, checkRow, heading, note, numberRow, selectRow, sizeRow, sortableList, togglePanel, type Panel } from '../ui.ts';
+import { button, checkRow, heading, note, numberRow, selectRow, sizeControl, sizeRow, sortableList, togglePanel, type Panel } from '../ui.ts';
 import { COMMON_SIZES, SIZE_FLOOR_USD, SIZE_MAX_USD, sizeText } from '../sizes.ts';
 import type { LtSeries } from '../lt.ts';
 import { GestureRecognizer, bindTouch, type GestureHandlers, type Pt } from '../touch.ts';
@@ -440,8 +440,9 @@ export class OiPane extends TimePane {
 }
 
 const HALF_LIVES = [2, 5, 10, 25, 50, 100, 250, 1000];
-const MIN_SIZES = [0, 10_000, 50_000, 100_000, 250_000, 500_000, 1_000_000];
-const MAX_SIZES = [0, 100_000, 250_000, 500_000, 1_000_000, 5_000_000];
+/** The Liquidity Tracker's size filters' menus (any size can be typed; the menus' "any" and "no cap" are 0). */
+const MIN_SIZES = [10_000, 50_000, 100_000, 250_000, 500_000, 1_000_000];
+const MAX_SIZES = [100_000, 250_000, 500_000, 1_000_000, 5_000_000];
 const MINUTE = 60_000;
 
 /** Liquidity Tracker row: distance-weighted bid and ask liquidity of the aggregated enabled venues over time (see lt.ts). */
@@ -466,10 +467,16 @@ export class LtPane extends TimePane {
       wrap.append(control); this.head.append(wrap);
       this.#sync.push(() => { if (control.value !== get()) control.value = get(); });
     };
-    const size = (v: number, none: string, sign: string): [string, string] => [String(v), v === 0 ? none : `${sign} $${usd(scaledUsd(v))}`];
+    // Any size, typed or from the menu; 0 is no filter.
+    const size = (label: string, title: string, sign: '≥' | '≤', none: string, presets: readonly number[], get: () => number, put: (usd: number) => void): void => {
+      const wrap = document.createElement('label'); wrap.className = 'ctl'; setTip(wrap, title); wrap.append(label);
+      const control = sizeControl(label, { sign, value: scaledUsd(get()), presets: presets.map(scaledUsd), min: 1, max: scaledUsd(SIZE_MAX_USD), none }, v => put(v === 0 ? 0 : unscaledUsd(v)));
+      wrap.append(control.root); this.head.append(wrap);
+      this.#sync.push(() => control.set(scaledUsd(get())));
+    };
     select(t('Half-life'), t("Distance from the touch, in basis points of price, at which a level's weight halves"), HALF_LIVES.map(v => [String(v), `${v} bp`]), () => String(lt().halfLifeBp), v => patch({ halfLifeBp: Number(v) }));
-    select(t('Min'), t('Ignore price bins smaller than this'), MIN_SIZES.map(v => size(v, t('any'), '≥')), () => String(lt().minUsd), v => patch({ minUsd: Number(v) }));
-    select(t('Max'), t('Ignore price bins larger than this'), MAX_SIZES.map(v => size(v, t('no cap'), '≤')), () => String(lt().maxUsd), v => patch({ maxUsd: Number(v) }));
+    size(t('Min'), t('Ignore price bins smaller than this'), '≥', t('any'), MIN_SIZES, () => lt().minUsd, v => patch({ minUsd: v }));
+    size(t('Max'), t('Ignore price bins larger than this'), '≤', t('no cap'), MAX_SIZES, () => lt().maxUsd, v => patch({ maxUsd: v }));
     const avg = document.createElement('label'); avg.className = 'ctl'; setTip(avg, t('Divide by the summed weights of the non-empty levels, as if each had size 1'));
     const box = document.createElement('input'); box.type = 'checkbox'; box.checked = lt().average; box.onchange = () => patch({ average: box.checked });
     avg.append(box, t('Per level')); this.head.append(avg);

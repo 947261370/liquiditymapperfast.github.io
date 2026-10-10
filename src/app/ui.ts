@@ -4,7 +4,7 @@ import { scrimFor } from './sheet.ts';
 import { EDGE, chooseSide, placeOn, type Side } from './placement.ts';
 import { makeDraggable } from './drag.ts';
 import { t } from './i18n.ts';
-import { parseSize, sizeText } from './sizes.ts';
+import { sizeText, takeSize, type SizeRule, type SizeWhy } from './sizes.ts';
 
 /**
  * One panel for every settings popover (bar stats, highlights, sounds, ...): a header, optional sticky tools, a scrolling body, and
@@ -158,35 +158,58 @@ export function numberRow(name: string, description: string, o: { min: number; s
 }
 
 /**
- * A size in USD: the sign that says which side of it counts (`<` for what is under it, `≥` for it and over), the value written out, and the
- * common sizes in a menu beside it (a native one: a phone shows its own picker). The box takes `100k`, `2.5M`, `1,5M`, `$250,000` (see
- * `parseSize`); a value under `min` or over `max` is held at the limit with `hint` saying why, and a text that is not a size puts the box
- * back. With `only`, the setting can take no other sizes: the nearest is taken, and `hint` says so. Values are the coin's own USD.
+ * How a size box is set up: the sign that says which side of the size counts (`<` what is under it, `≥` it and over, `≤` it and under), the
+ * value (the coin's own USD), the common sizes for its menu, and what it may be (`SizeRule`). `hint` says why a value under `min` was not
+ * taken; `none` is the word for 0 when the size may be off.
  */
-export function sizeRow(name: string, description: string, o: { sign: '<' | '≥'; value: number; presets: readonly number[]; min: number; max?: number; only?: readonly number[]; hint?: string }, onChange: (usd: number) => void): HTMLElement {
-  const text = (v: number): string => `$${sizeText(v)}`;
+export interface SizeOptions extends Omit<SizeRule, 'none'> { sign: '<' | '≥' | '≤'; value: number; presets: readonly number[]; hint?: string; none?: string }
+
+/**
+ * A size box: the sign, the value written out, and the common sizes in a menu beside it (a native one: a phone shows its own picker). It takes
+ * `100k`, `2.5M`, `1,5M`, `$250,000` (`parseSize`); what it does with a size it may not hold is `takeSize`. `say` shows why a value was not
+ * taken as typed (null: clear it); without one, the box reports it as the browser reports a field it will not take. `set` writes a value
+ * changed elsewhere into the box.
+ */
+export function sizeControl(name: string, o: SizeOptions, onChange: (usd: number) => void, say?: (why: string | null, value: number) => void): { root: HTMLElement; set: (usd: number) => void } {
+  const text = (v: number): string => v === 0 && o.none ? o.none : `$${sizeText(v)}`;
   let current = o.value;
   const input = el('input', { type: 'text', class: 'size-value', value: text(current), ariaLabel: name });
   input.setAttribute('inputmode', 'decimal'); input.spellcheck = false; input.autocomplete = 'off';
   const menu = el('select', { class: 'size-menu', ariaLabel: t('Common sizes'), tip: t('Common sizes') });
-  menu.append(new Option('▾', ''));
-  for (const p of o.only ?? o.presets) menu.append(new Option(text(p), String(p)));
-  const said = el('span', { class: 'desc size-hint', hidden: true });
-  const commit = (v: number, why: string | null): void => {
-    input.value = text(v); said.textContent = why ?? ''; said.hidden = !why;
+  menu.append(new Option('', ''));      // nothing chosen: the menu shows only its arrow
+  if (o.none) menu.append(new Option(o.none, '0'));
+  for (const p of o.presets) menu.append(new Option(text(p), String(p)));
+  const tell = say ?? ((why: string | null): void => { input.setCustomValidity(why ?? ''); if (why) input.reportValidity(); });
+  const whyText = (why: SizeWhy | null): string | null => why === null ? null : why === 'bad' ? t('Not a size: write it as 100k, 2.5M or 250000.')
+    : why === 'high' ? t('Up to {max}.', { max: text(o.max!) }) : o.hint ?? t('From {min}.', { min: text(o.min) });
+  const commit = (v: number, why: SizeWhy | null): void => {
+    input.value = text(v); tell(whyText(why), v);
     if (v !== current) { current = v; onChange(v); }
   };
-  input.onchange = () => {
-    const typed = parseSize(input.value);
-    if (typed === null) { commit(current, t('Not a size: write it as 100k, 2.5M or 250000.')); return; }
-    if (o.only?.length) { const near = o.only.reduce((a, b) => Math.abs(Math.log(b / typed)) < Math.abs(Math.log(a / typed)) ? b : a); commit(near, near === typed ? null : o.hint ?? null); return; }
-    const held = Math.min(o.max ?? Infinity, Math.max(o.min, typed));
-    commit(held, held === typed ? null : typed < o.min ? o.hint ?? t('From {min}.', { min: text(o.min) }) : t('Up to {max}.', { max: text(o.max!) }));
-  };
-  menu.onchange = () => { const v = Number(menu.value); menu.value = ''; if (v > 0) commit(v, null); };
+  input.oninput = () => { if (!say) input.setCustomValidity(''); };
+  input.onchange = () => { const taken = takeSize(input.value, current, { ...o, none: !!o.none }, o.none); commit(taken.value, taken.why); };
+  menu.onchange = () => { const v = Number(menu.value), picked = menu.value !== ''; menu.value = ''; if (picked && Number.isFinite(v)) commit(v, null); };
+  const root = el('span', { class: 'size-ctl' }, el('span', { class: 'size-sign', textContent: o.sign }), input, menu);
+  return { root, set: v => { if (v !== current || document.activeElement !== input) { current = v; input.value = text(v); } } };
+}
+
+/**
+ * Why a size row last refused or held a value, kept for a few seconds by the row's name and description: the change it made redraws the
+ * panel (each setting's panel is built again from the store), and the reason must still be there to read.
+ */
+const sizeSaid = new Map<string, { why: string; value: number; until: number }>();
+const SAID_MS = 10_000;
+
+/** A settings row holding a size box (see `sizeControl`), with why a value was not taken said under the description. */
+export function sizeRow(name: string, description: string, o: SizeOptions, onChange: (usd: number) => void): HTMLElement {
+  const key = `${name}|${description}`, kept = sizeSaid.get(key), now = Date.now();
+  const said = el('span', { class: 'desc size-hint', hidden: true });
+  const show = (why: string | null): void => { said.textContent = why ?? ''; said.hidden = !why; };
+  // Only while the box still holds the value the reason was given for: the other size of a pair can move this one.
+  if (kept && kept.until > now && kept.value === o.value) show(kept.why); else sizeSaid.delete(key);
+  const control = sizeControl(name, o, onChange, (why, value) => { if (why) sizeSaid.set(key, { why, value, until: Date.now() + SAID_MS }); else sizeSaid.delete(key); show(why); });
   return el('label', { class: 'field size-field', tip: description },
-    el('span', { class: 'label' }, el('span', { class: 'name', textContent: name }), el('span', { class: 'desc', textContent: description }), said),
-    el('span', { class: 'size-ctl' }, el('span', { class: 'size-sign', textContent: o.sign }), input, menu));
+    el('span', { class: 'label' }, el('span', { class: 'name', textContent: name }), el('span', { class: 'desc', textContent: description }), said), control.root);
 }
 
 /** A row of mutually exclusive choices. */

@@ -363,6 +363,11 @@ ol.steps { margin: 6px 0 10px; padding-left: 20px; display: grid; gap: 8px; line
 .size-ctl .size-value { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
 .size-ctl .size-menu { flex: none; width: 34px; padding-left: 4px; padding-right: 0; }
 .size-hint { color: var(--warn, var(--muted)); }
+/* The same box in a pane's header (the Liquidity Tracker's Min and Max), as small as the header's selects. */
+.ctl .size-ctl { width: auto; gap: 2px; }
+.ctl .size-ctl .size-sign { width: auto; }
+.ctl .size-ctl .size-value { flex: none; width: 58px; padding: 1px 4px; font-size: 11px; }
+.ctl .size-ctl .size-menu { width: 22px; padding: 1px 0 1px 2px; font-size: 11px; }
 .panel .slider { display: flex; align-items: center; gap: 8px; width: 170px; }
 .panel .slider input { flex: 1; min-width: 0; accent-color: var(--ui); }
 .panel .slider output { min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }

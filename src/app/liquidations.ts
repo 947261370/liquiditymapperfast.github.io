@@ -3,6 +3,7 @@ import { TimeBook } from './prints.ts';
 import { price as fmtPrice, usd, clock } from './format.ts';
 import { venueLabel } from './venues.ts';
 import { scaledUsd } from './coin.ts';
+import { SIZE_MAX_USD } from './sizes.ts';
 import { t } from './i18n.ts';
 import type { InfoLine } from './infobox.ts';
 
@@ -21,15 +22,15 @@ export class LiquidationBook extends TimeBook<Liquidation> {
 
 /** Whether they show, the smallest drawn, which side, their size, and their size written beside the larger ones. */
 export interface LiquidationSettings { on: boolean; minUsd: number; side: 'both' | 'long' | 'short'; scale: number; labels: boolean }
-/** The smallest liquidations a person can choose to see: every one from $100 is recorded. */
+/** The smallest liquidations offered in the menu; any size from the first can be typed (every one from $100 is recorded). */
 export const LIQUIDATION_MINIMUMS: readonly number[] = [100, 1_000, 5_000, 10_000, 25_000, 100_000, 500_000];
 export const LIQUIDATION_DEFAULTS: Readonly<LiquidationSettings> = { on: true, minUsd: 1_000, side: 'both', scale: 1, labels: true };
 export const LIQUIDATION_LIMITS = { scale: { min: 0.5, max: 2, step: 0.1 } } as const;
 
-/** Saved settings, each field checked (anything else is the default; a minimum that is not one of the choices is the nearest under it). */
+/** Saved settings, each field checked (anything else is the default; the smallest drawn is any size from the recording's floor). */
 export function readLiquidations(saved: unknown): LiquidationSettings {
   const s = (saved ?? {}) as Partial<LiquidationSettings>, d = LIQUIDATION_DEFAULTS, L = LIQUIDATION_LIMITS;
-  const min = typeof s.minUsd === 'number' && Number.isFinite(s.minUsd) ? [...LIQUIDATION_MINIMUMS].reverse().find(m => m <= s.minUsd!) ?? d.minUsd : d.minUsd;
+  const min = typeof s.minUsd === 'number' && Number.isFinite(s.minUsd) && s.minUsd >= LIQUIDATION_MINIMUMS[0]! && s.minUsd <= SIZE_MAX_USD ? s.minUsd : d.minUsd;
   const scale = typeof s.scale === 'number' && Number.isFinite(s.scale) ? Math.round(Math.min(L.scale.max, Math.max(L.scale.min, s.scale)) / L.scale.step) * L.scale.step : d.scale;
   return {
     on: typeof s.on === 'boolean' ? s.on : d.on,

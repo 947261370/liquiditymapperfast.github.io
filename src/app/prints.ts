@@ -1,6 +1,7 @@
 import { price as fmtPrice } from './format.ts';
 import { t } from './i18n.ts';
 import { scaledUsd } from './coin.ts';
+import { SIZE_MAX_USD } from './sizes.ts';
 
 /**
  * One large market order as the server sends it: [time ms, instrument id, side, price, USD notional], and for an order of several fills
@@ -124,17 +125,17 @@ export function bubbleRadius(usd: number, largest: number): number {
  */
 /** `marks`: the exchange's mark in each bubble large enough to hold it. */
 export interface BubbleSettings { minUsd: number; side: 'both' | 'buy' | 'sell'; scale: number; opacity: number; labels: boolean; marks: boolean }
-/** The smallest orders a person can choose to see: the recording keeps every one from $25,000. */
+/** The smallest orders offered in the menu; any size from the first can be typed (the recording keeps every order from $25,000). */
 export const BUBBLE_MINIMUMS: readonly number[] = [25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_500_000];
 export const BUBBLE_DEFAULTS: Readonly<BubbleSettings> = { minUsd: 25_000, side: 'both', scale: 1, opacity: 0.5, labels: false, marks: true };
 export const BUBBLE_LIMITS = { scale: { min: 0.5, max: 2, step: 0.1 }, opacity: { min: 0.1, max: 0.9, step: 0.05 } } as const;
 
-/** Saved settings, each field checked (anything else is the default; a minimum that is not one of the choices is the nearest under it). */
+/** Saved settings, each field checked (anything else is the default; the smallest order is any size from the recording's floor). */
 export function readBubbles(saved: unknown): BubbleSettings {
   const s = (saved ?? {}) as Partial<BubbleSettings>, d = BUBBLE_DEFAULTS, L = BUBBLE_LIMITS;
   const within = (v: unknown, lo: number, hi: number, step: number, fallback: number): number =>
     typeof v === 'number' && Number.isFinite(v) ? Math.round(Math.min(hi, Math.max(lo, v)) / step) * step : fallback;
-  const min = typeof s.minUsd === 'number' && Number.isFinite(s.minUsd) ? [...BUBBLE_MINIMUMS].reverse().find(m => m <= s.minUsd!) ?? d.minUsd : d.minUsd;
+  const min = typeof s.minUsd === 'number' && Number.isFinite(s.minUsd) && s.minUsd >= BUBBLE_MINIMUMS[0]! && s.minUsd <= SIZE_MAX_USD ? s.minUsd : d.minUsd;
   return {
     minUsd: min,
     side: s.side === 'buy' || s.side === 'sell' ? s.side : 'both',

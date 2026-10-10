@@ -16,7 +16,8 @@ import type { VenueControl } from './source.ts';
 import { coverage } from './panes/levels-data.ts';
 import { SCOPE_OPTIONS, activeIds, chipClick, heatmapSourceOf, kindOf, scopeCounts, scopedOut } from './scope.ts';
 import { HIGHLIGHT_LIMITS } from './anomaly.ts';
-import { rangeRow, switchRow, note, togglePanel, checkRow, heading, selectRow, numberRow, openedPanel, button } from './ui.ts';
+import { rangeRow, switchRow, note, togglePanel, checkRow, heading, selectRow, numberRow, openedPanel, button, sizeRow } from './ui.ts';
+import { SIZE_MAX_USD } from './sizes.ts';
 import { GROUP_TITLES, SHORTCUTS, type ShortcutGroup } from './shortcuts.ts';
 import { buildLayoutsPanel, type LayoutsPanelState, type PaneHost } from './layouts/panel.ts';
 import { clampGoTo, formatDateTime, parseDateTime } from './price-line.ts';
@@ -598,7 +599,8 @@ export class Toolbar {
     const set = (change: Partial<BubbleSettings>): void => { this.store.set({ tradeBubbles: { ...this.store.state.tradeBubbles, ...change } }); };
     body.append(
       switchRow(t('Show trade bubbles'), t('Large market orders where they traded, the fills of one order added together.'), this.store.state.show.bubbles, on => { this.store.set({ show: { ...this.store.state.show, bubbles: on } }); rebuild(); }),
-      selectRow(t('Smallest order'), t('Orders under this are not drawn. Every order from {floor} is recorded, so a lower choice brings them back.', { floor: `$${usd(scaledUsd(BUBBLE_MINIMUMS[0]!))}` }), BUBBLE_MINIMUMS.map(v => [String(v), `$${usd(scaledUsd(v))}`] as [string, string]), String(b.minUsd), v => set({ minUsd: Number(v) })),
+      sizeRow(t('Smallest order'), t('Orders under this are not drawn. Every order from {floor} is recorded, so a lower choice brings them back.', { floor: `$${usd(scaledUsd(BUBBLE_MINIMUMS[0]!))}` }),
+        { sign: '≥', value: scaledUsd(b.minUsd), presets: BUBBLE_MINIMUMS.map(scaledUsd), min: scaledUsd(BUBBLE_MINIMUMS[0]!), max: scaledUsd(SIZE_MAX_USD) }, v => set({ minUsd: unscaledUsd(v) })),
       selectRow(t('Side'), t('Both sides, or only the market buys or only the market sells.'), [['both', t('Both')], ['buy', t('Buys only')], ['sell', t('Sells only')]], b.side, v => set({ side: v === 'buy' || v === 'sell' ? v : 'both' })),
       rangeRow(t('Bubble size'), t('Every bubble larger or smaller; their sizes keep their proportions.'), { min: L.scale.min, max: L.scale.max, step: L.scale.step, value: b.scale, format: v => `×${v.toFixed(1)}` }, scale => set({ scale })),
       rangeRow(t('Opacity'), t('How solid the bubbles are: lower lets the map and the candles show through.'), { min: L.opacity.min, max: L.opacity.max, step: L.opacity.step, value: b.opacity, format: v => `${Math.round(v * 100)}%` }, opacity => set({ opacity })),
@@ -617,7 +619,8 @@ export class Toolbar {
     const set = (change: Partial<LiquidationSettings>): void => { this.store.set({ liquidations: { ...this.store.state.liquidations, ...change } }); };
     body.append(
       switchRow(t('Show liquidations'), t('Positions the exchanges closed by force, where the market was when it happened.'), s.on, on => { set({ on }); rebuild(); }),
-      selectRow(t('Smallest liquidation'), t('Smaller ones are not drawn. Every one from {floor} is recorded, so a lower choice brings them back.', { floor: `$${usd(scaledUsd(LIQUIDATION_MINIMUMS[0]!))}` }), LIQUIDATION_MINIMUMS.map(v => [String(v), `$${usd(scaledUsd(v))}`] as [string, string]), String(s.minUsd), v => set({ minUsd: Number(v) })),
+      sizeRow(t('Smallest liquidation'), t('Smaller ones are not drawn. Every one from {floor} is recorded, so a lower choice brings them back.', { floor: `$${usd(scaledUsd(LIQUIDATION_MINIMUMS[0]!))}` }),
+        { sign: '≥', value: scaledUsd(s.minUsd), presets: LIQUIDATION_MINIMUMS.map(scaledUsd), min: scaledUsd(LIQUIDATION_MINIMUMS[0]!), max: scaledUsd(SIZE_MAX_USD) }, v => set({ minUsd: unscaledUsd(v) })),
       selectRow(t('Side'), t('Both, or only the longs closed (forced selling) or only the shorts closed (forced buying).'), [['both', t('Both')], ['long', t('Longs closed')], ['short', t('Shorts closed')]], s.side, v => set({ side: v === 'long' || v === 'short' ? v : 'both' })),
       rangeRow(t('Size'), t('Every diamond larger or smaller; their sizes keep their proportions.'), { min: L.scale.min, max: L.scale.max, step: L.scale.step, value: s.scale, format: v => `×${v.toFixed(1)}` }, scale => set({ scale })),
       switchRow(t('Write the size beside the larger ones'), t('Only where it fits; hover or tap any diamond for its size.'), s.labels, labels => set({ labels })),

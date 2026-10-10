@@ -45,7 +45,8 @@ export function buildVwapPanel(store: Store, tools: HTMLElement, body: HTMLEleme
   body.append(
     heading(t('Whale VWAP')),
     switchRow(t('Whale VWAP'), t('The average price the large market orders paid since the session began: buys in the buy colour, sells in the sell colour.'), s.whale, on => set({ whale: on }, true)),
-    selectRow(t('Orders from'), t('Only market orders at least this large are averaged, on the exchanges switched on.'), WHALE_BANDS_USD.map(b => [String(b), `$${usd(scaledUsd(b))}`] as [string, string]), String(s.whaleUsd), v => set({ whaleUsd: Number(v) })),
+    // Four sizes only: the whale sums are kept per size band in memory (shared/print-sums.ts), not per order.
+    selectRow(t('Orders from'), t('Only market orders at least this large are averaged, on the exchanges switched on.'), WHALE_BANDS_USD.map(b => [String(b), `≥ $${usd(scaledUsd(b))}`] as [string, string]), String(s.whaleUsd), v => set({ whaleUsd: Number(v) })),
   );
   const info = whale();
   if (s.whale && info) {

@@ -60,6 +60,25 @@ export const atBoxEdge = (cut: number, scale = 1): boolean => SIZE_EDGES.some((e
 export const linesToAsk = (sizes: readonly number[], scaled: (usd: number) => number): number[] =>
   [...new Set(sizes.filter(v => v > SIZE_FLOOR_USD && !atBoxEdge(v)))].sort((a, b) => a - b).map(scaled);
 
+/** What a size setting may be: from `min` to `max`, or 0 for none when `none` (a filter that may be off). */
+export interface SizeRule { min: number; max?: number; none?: boolean }
+/** Why a typed size was not taken as typed: not a size, under the least, or over the most. */
+export type SizeWhy = 'bad' | 'low' | 'high';
+
+/**
+ * What a size typed into a box becomes under `rule`: the value taken and why it differs from what was typed (null: it does not). A text that
+ * is not a size keeps `current`. With `none`, an empty box, a 0 or `noneWord` (the word the box shows for none) is 0.
+ */
+export function takeSize(text: string, current: number, rule: SizeRule, noneWord = ''): { value: number; why: SizeWhy | null } {
+  const plain = text.trim().toLowerCase();
+  if (rule.none && (plain === '' || /^\$?0+([.,]0*)?$/.test(plain) || (noneWord !== '' && plain === noneWord.trim().toLowerCase()))) return { value: 0, why: null };
+  const typed = parseSize(text);
+  if (typed === null) return { value: current, why: 'bad' };
+  if (typed < rule.min) return { value: rule.min, why: 'low' };
+  if (rule.max !== undefined && typed > rule.max) return { value: rule.max, why: 'high' };
+  return { value: typed, why: null };
+}
+
 /** A size setting from storage: a USD size from the floor up, or null. */
 export const readSize = (v: unknown): number | null => typeof v === 'number' && Number.isFinite(v) && v >= SIZE_FLOOR_USD && v <= SIZE_MAX_USD ? v : null;
 

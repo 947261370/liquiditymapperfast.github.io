@@ -120,7 +120,8 @@ test('the wire row carries every field and a malformed one is dropped', () => {
 
 test('the page: settings checked field by field, the side and size filter, and the book without duplicates', () => {
   assert.deepEqual(readLiquidations(undefined), LIQUIDATION_DEFAULTS);
-  assert.deepEqual(readLiquidations({ on: false, minUsd: 7_000, side: 'short', scale: 3, labels: false }), { on: false, minUsd: 5_000, side: 'short', scale: 2, labels: false });
+  assert.deepEqual(readLiquidations({ on: false, minUsd: 7_000, side: 'short', scale: 3, labels: false }), { on: false, minUsd: 7_000, side: 'short', scale: 2, labels: false }, 'any size from the $100 floor');
+  assert.equal(readLiquidations({ minUsd: 100 }).minUsd, 100); assert.equal(readLiquidations({ minUsd: 5e10 }).minUsd, LIQUIDATION_DEFAULTS.minUsd);
   assert.deepEqual(readLiquidations({ side: 'both ways', scale: 'big', minUsd: 1 }), { ...LIQUIDATION_DEFAULTS, minUsd: LIQUIDATION_DEFAULTS.minUsd });
   const l: Liquidation = { t: 5, id: 'bybit:BTCUSDT', side: 'long', price: 80_000, usd: 2_000, reported: 80_000, kind: 'fill' };
   assert.equal(liquidationHidden(l, { ...LIQUIDATION_DEFAULTS, minUsd: 5_000 }), true);

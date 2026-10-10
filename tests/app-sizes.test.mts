@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SIZE_EDGES } from '../src/shared/footprint.ts';
-import { SIZE_FLOOR_USD, SIZE_MAX_USD, COMMON_SIZES, atBoxEdge, linesToAsk, overFromBoxes, parseSize, readSize, sizeFromBox, sizeText } from '../src/app/sizes.ts';
+import { SIZE_FLOOR_USD, SIZE_MAX_USD, COMMON_SIZES, atBoxEdge, linesToAsk, overFromBoxes, parseSize, readSize, sizeFromBox, sizeText, takeSize } from '../src/app/sizes.ts';
 
 test('a size is read as people type it, in either habit of commas and dots', () => {
   const cases: [string, number | null][] = [
@@ -11,6 +11,18 @@ test('a size is read as people type it, in either habit of commas and dots', () 
     ['', null], ['k', null], ['abc', null], ['1..5m', null], ['1,5,0', null], ['0', null], ['-5k', null], ['1e6', null], ['5x', null], ['1.2.3', null], ['10kk', null],
   ];
   for (const [text, want] of cases) assert.equal(parseSize(text), want, JSON.stringify(text));
+});
+
+test('a typed size is taken, held at the least or the most with the reason, or refused; a filter that may be off takes 0', () => {
+  const rule = { min: 25_000, max: 1e10 };
+  assert.deepEqual(takeSize('75k', 100_000, rule), { value: 75_000, why: null });
+  assert.deepEqual(takeSize('10k', 100_000, rule), { value: 25_000, why: 'low' });
+  assert.deepEqual(takeSize('20B', 100_000, rule), { value: 1e10, why: 'high' });
+  assert.deepEqual(takeSize('lots', 100_000, rule), { value: 100_000, why: 'bad' }, 'not a size: the value stays');
+  assert.deepEqual(takeSize('', 100_000, rule), { value: 100_000, why: 'bad' }, 'an empty box is not none unless the size may be off');
+  const filter = { min: 1, none: true };
+  for (const off of ['', '0', '$0', '0.0', ' any ', 'ANY']) assert.deepEqual(takeSize(off, 50_000, filter, 'any'), { value: 0, why: null }, JSON.stringify(off));
+  assert.deepEqual(takeSize('2.5M', 0, filter, 'any'), { value: 2_500_000, why: null }); assert.deepEqual(takeSize('0.5', 0, filter, 'any'), { value: 1, why: 'low' });
 });
 
 test('a size is written with the digits it was set with, so the box shows what was typed', () => {
