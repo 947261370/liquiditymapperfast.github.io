@@ -148,6 +148,23 @@ test('after a pause of hours the minutes caught up still re-arm the watch, so th
   assert.equal(rig.alerts.log[1]!.side, 'buy');
 });
 
+test('catching up judges each minute against the whole of its hours, so an episode that never came back sounds once', async () => {
+  // Two hours of history whose older half sits lower than its newer half, an extreme, then a hundred minutes a little above the usual
+  // and rising (above the median of the two hours before each of them, below their 99th percentile), then a second extreme: one episode.
+  // Judged against only the newer half, the first of those minutes looked usual and re-armed the watch (Codex review of 5a3e74b).
+  const level = (n: number) => n / 1_000;
+  const shareAt = (i: number): number => i < 2 ? level(19) : i < 60 ? level(5 + i % 5) : i < 120 ? level(13 + (i * 3) % 7) : i === 120 || i === 221 ? 0.8 : (1_453 + 3 * (i - 120)) / 100_000;
+  const rig = depthRig(t => { const s = shareAt((t - T0) / MIN); return { bid: 500 * (1 + s) / (1 - s), ask: 500 }; });
+  await load(rig);
+  rig.now = T0 + 121 * MIN + 15_000; rig.alerts.tick(rig.now); await settle();
+  assert.equal(rig.player.played.length, 1, 'the first extreme');
+  rig.now = T0 + 222 * MIN + 15_000;
+  for (let i = 0; i < 3; i++) { rig.alerts.tick(rig.now); await settle(); }
+  assert.deepEqual(rig.asked.slice(-2).map(([from, to]) => (to - from) / MIN), [60, 41]);
+  assert.equal(rig.player.played.length, 1, 'no minute came back to its usual, so the second extreme is the same episode');
+  assert.equal(rig.alerts.depthState?.minutes, 121, 'the hours kept are the baseline of the next minute');
+});
+
 test('a minute judged long after it ended does not sound', async () => {
   const state = initialState();
   state.markets = [{ instrumentId: 'a:BTC', venue: 'a', marketType: 'perpetual' }];

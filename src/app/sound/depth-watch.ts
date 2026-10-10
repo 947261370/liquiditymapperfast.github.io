@@ -51,9 +51,13 @@ export class DepthWatch {
   get size(): number { return this.#minutes.length; }
 
   /** Take minutes in (newer than those held; any others are ignored) and forget those older than `keepFrom`. */
-  add(minutes: readonly DepthMinute[], keepFrom: number): void {
+  add(minutes: readonly DepthMinute[], keepFrom = -Infinity): void {
     for (const m of [...minutes].sort((a, b) => a.t - b.t)) if (m.t > this.newest) this.#minutes.push(m);
-    let drop = 0; while (drop < this.#minutes.length && this.#minutes[drop]!.t < keepFrom) drop++;
+    this.forget(keepFrom);
+  }
+  /** Forget the minutes older than `before`. */
+  forget(before: number): void {
+    let drop = 0; while (drop < this.#minutes.length && this.#minutes[drop]!.t < before) drop++;
     if (drop) this.#minutes.splice(0, drop);
   }
 

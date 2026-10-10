@@ -223,20 +223,26 @@ export class Alerts {
     reader(ids, from, to).then(frame => {
       if (key !== this.#depthKey) return;
       const minutes = depthMinutes(frame, from, to, rule.range);
-      this.#depth.add(minutes, to - rule.hours * HOUR - MINUTE);
+      // Everything the first of these minutes is judged against stays until they all have been; only then are the older ones forgotten.
+      this.#depth.add(minutes, from - rule.hours * HOUR);
       this.#depthTo = to;
-      this.depthState = { minutes: this.#depth.size, loading: to < settled };
       // Every minute goes through the watch in order, the hours loaded at the start and those caught up after a pause too, so it re-arms
       // where the balance came back to its usual; only a fresh minute sounds, and only while the rule is still on and no replay has
       // begun since the question was asked (the answer can come after either).
-      for (const m of minutes) {
-        const signal = this.#depth.judge(m.t, rule);
-        if (!signal || this.clock() - (m.t + MINUTE) > DEPTH_FRESH_MS || replaying() || !this.#s.sounds.panels.depthPane.extreme) continue;
-        const change = (v: number, usual: number): string => usual > 0 ? `${v >= usual ? '+' : '-'}${Math.round(Math.abs(v / usual - 1) * 100)}%` : '–';
-        const values = { range: `${Math.round(rule.range * 1_000) / 10}%`, pct: String(rule.pct), hours: String(rule.hours), bids: change(signal.bid, signal.usualBid), asks: change(signal.ask, signal.usualAsk) };
-        this.#fire(this.clock(), 'depthPane', 'depth-extreme', signal.side, signal.side === 'buy'
-          ? t('Bids outweigh asks within {range} more than in {pct} % of the last {hours} h; bids {bids}, asks {asks} against usual', values)
-          : t('Asks outweigh bids within {range} more than in {pct} % of the last {hours} h; bids {bids}, asks {asks} against usual', values), 'depth-extreme', DEPTH_COOLDOWN_MS);
+      try {
+        for (const m of minutes) {
+          const signal = this.#depth.judge(m.t, rule);
+          if (!signal || this.clock() - (m.t + MINUTE) > DEPTH_FRESH_MS || replaying() || !this.#s.sounds.panels.depthPane.extreme) continue;
+          const change = (v: number, usual: number): string => usual > 0 ? `${v >= usual ? '+' : '-'}${Math.round(Math.abs(v / usual - 1) * 100)}%` : '–';
+          const values = { range: `${Math.round(rule.range * 1_000) / 10}%`, pct: String(rule.pct), hours: String(rule.hours), bids: change(signal.bid, signal.usualBid), asks: change(signal.ask, signal.usualAsk) };
+          this.#fire(this.clock(), 'depthPane', 'depth-extreme', signal.side, signal.side === 'buy'
+            ? t('Bids outweigh asks within {range} more than in {pct} % of the last {hours} h; bids {bids}, asks {asks} against usual', values)
+            : t('Asks outweigh bids within {range} more than in {pct} % of the last {hours} h; bids {bids}, asks {asks} against usual', values), 'depth-extreme', DEPTH_COOLDOWN_MS);
+        }
+      } finally {
+        // Whatever happened above, the watch keeps only what the next minute is judged against.
+        this.#depth.forget(to - rule.hours * HOUR - MINUTE);
+        this.depthState = { minutes: this.#depth.size, loading: to < settled };
       }
       this.onChange();
     }, () => { if (key === this.#depthKey) this.#depthWait = this.clock() + 30_000; }).finally(() => { this.#depthBusy = false; });
