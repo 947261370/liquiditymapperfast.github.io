@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ASKS, BIDS, DepthBars, LIVE_BAR_MS, MAX_DEPTH_BARS, barTotals, fitsBars, missingSpans, neededBars, pixelFlags, type BarReader } from '../src/app/depth-bars.ts';
+import { ASKS, BIDS, DepthBars, KEEP_BARS, LIVE_BAR_MS, MAX_DEPTH_BARS, barTotals, fitsBars, missingSpans, neededBars, pixelFlags, type BarReader } from '../src/app/depth-bars.ts';
 import type { ColumnSet, ColumnsFrame } from '../src/app/wire.ts';
 
 const H = 3_600_000, T0 = Date.UTC(2026, 9, 10, 0, 0, 0);
@@ -80,15 +80,60 @@ test('candles are asked for once, then only the ends a pan uncovers; another ban
   assert.deepEqual(asked.slice(3), [[35, 55]], 'another band: everything again');
 });
 
-test('the forming candle and the one before it are read again once a minute while they are in view', async () => {
+test('the forming candle is read again once a minute while it is in view, and a candle read before it closed is read again once whole', async () => {
   const { bars, asked } = rig();
   let now = T0 + 150 * H + 10 * 60_000;
-  const need = neededBars(T0 + 140 * H, now, H, 5);
-  const go = async () => { for (let i = 0; i < 2; i++) { bars.ensure(['a', 'b'], 0.2, H, need, now, () => {}); await settle(); } };
+  const need = () => neededBars(T0 + 140 * H, now + 3 * H, H, 5, (Math.floor(now / H) + 1) * H);
+  const go = async () => { for (let i = 0; i < 3; i++) { bars.ensure(['a', 'b'], 0.2, H, need(), now, () => {}); await settle(); } };
   await go();
-  assert.deepEqual(asked, [[135, 151]]);
+  assert.deepEqual(asked, [[135, 151]], 'up to the end of the forming candle, not into the view\'s empty margin');
   now += LIVE_BAR_MS - 1; await go();
   assert.equal(asked.length, 1, 'not before a minute');
   now += 1; await go();
-  assert.deepEqual(asked.slice(1), [[149, 151]]);
+  assert.deepEqual(asked.slice(1), [[150, 151]], 'the forming candle');
+  now = T0 + 151 * H + 20_000; await go();
+  assert.deepEqual(asked.slice(2), [[150, 152]], 'the candle that closed, now whole, with the new one in the same question');
+});
+
+test('on a live one-minute chart a candle that closes extreme is flagged, however the view moves on each minute', async () => {
+  // The recording of a minute is whole only once it has ended: read while forming, the extreme minute looks ordinary.
+  const M = 60_000, start = T0 + 300 * M, extreme = start + 5 * M;
+  let now = start;
+  const asked: [number, number][] = [];
+  const bars = new DepthBars((ids, from, to, stepMs) => { asked.push([from, to]); return Promise.resolve(frame(ids, from, to, stepMs, t => t + M > now ? (t > now ? null : { bid: 1_000, ask: 1_000 }) : t === extreme ? { bid: 1_800, ask: 200 } : book(t))); });
+  for (let step = 0; step < 10; step++) {
+    now = start + step * M + 20_000;
+    // The view follows the live edge with a margin to its right, as the map does.
+    const need = neededBars(now - 40 * M, now + 8 * M, M, 72, (Math.floor(now / M) + 1) * M);
+    for (let i = 0; i < 4; i++) { bars.ensure(['a', 'b'], 0.2, M, need, now, () => {}); await settle(); }
+  }
+  const need = neededBars(now - 40 * M, now + 8 * M, M, 72, (Math.floor(now / M) + 1) * M), flags = bars.flags(need, M, highlight);
+  assert.equal(flags[(extreme - need.from) / M], BIDS, 'read again once whole, and flagged');
+  assert.ok(asked.every(([, to]) => to <= (Math.floor(now / M) + 1) * M), 'nothing asked past the forming candle');
+});
+
+test('a long view is asked for a week at a time, newest first, and what an answer leaves out is asked for again', async () => {
+  const H4 = 4 * H, asked: [number, number][] = [];
+  let cut = true;
+  const bars = new DepthBars((ids, from, to, stepMs) => {
+    asked.push([(from - T0) / H4, (to - T0) / H4]);
+    // The first answer is cut short, as the server cuts a question longer than eight days (here: it skips the first six candles).
+    const f = frame(ids, from, to, stepMs, book);
+    if (cut) { cut = false; return Promise.resolve({ ...f, from: from + 6 * H4 }); }
+    return Promise.resolve(f);
+  });
+  const now = T0 + 600 * H4, need = neededBars(T0 + 100 * H4, T0 + 600 * H4, H4, 72, (Math.floor(now / H4) + 1) * H4);
+  for (let i = 0; i < 20; i++) { bars.ensure(['a', 'b'], 0.2, H4, need, now, () => {}); await settle(); }
+  assert.deepEqual(asked.slice(0, 2), [[558, 600], [522, 564]], 'a week (42 candles) at a time from the newest, and the six the first answer left out again');
+  assert.ok(asked.every(([from, to]) => to - from <= 42), 'never more than a week');
+  assert.equal(Math.min(...asked.map(([from]) => from)), 28, 'down to the start of the baseline');
+});
+
+test('no more than KEEP_BARS candles are kept, however far the view travels', async () => {
+  const bars = new DepthBars((ids, from, to, stepMs) => Promise.resolve(frame(ids, from, to, stepMs, book))), now = T0 + 5_000 * H;
+  for (let t0 = 100; t0 < 4_000; t0 += 150) {
+    const need = neededBars(T0 + t0 * H, T0 + (t0 + 100) * H, H, 72);
+    for (let i = 0; i < 4; i++) { bars.ensure(['a', 'b'], 0.2, H, need, now, () => {}); await settle(); }
+    assert.ok(bars.size <= KEEP_BARS, `${bars.size} candles held at ${t0} h`);
+  }
 });

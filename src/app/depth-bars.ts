@@ -13,15 +13,22 @@ import { imbalanceFlags } from './panes/pane-cards.ts';
 
 /** The most candles judged one by one (each is a merged column of every instrument, about 50 KB a candle for BTC's 29 markets). */
 export const MAX_DEPTH_BARS = 600;
-/** The forming candle and the one before it are asked for again this often while they are in view (the one before, because it was last read before it closed). */
+/** The forming candle is asked for again this often while it is in view. */
 export const LIVE_BAR_MS = 60_000;
+/** A candle is whole this long after it ends: the recorder commits its last minute at its first sample of the next one (every 5 s). */
+export const SETTLE_MS = 15_000;
+/** The most one question asks: 200 candles, and never more than a week (the server answers at most eight days of columns). */
+const CHUNK_BARS = 200, CHUNK_MS = 7 * 24 * 3_600_000;
+/** The candles kept about the view; others are forgotten, and asked for again if the view comes back to them. */
+export const KEEP_BARS = 3 * MAX_DEPTH_BARS;
 
 /** Whole candles [from, to). */
 export interface BarSpan { from: number; to: number }
 
 /**
- * The candles the highlight needs for a view: those on screen and the `length` before the first of them, ending at `until` (the replay's
- * moment: a candle containing it would carry its future; live, the end of the forming candle).
+ * The candles the highlight needs for a view: those on screen and the `length` before the first of them, ending at `until`: in a replay its
+ * moment (a candle containing it would carry its future), live the end of the forming candle (the view's margin to the right holds no
+ * recording, and asking for it would push the server's eight days of answer away from the candles before).
  */
 export function neededBars(t0: number, t1: number, tf: number, length: number, until = Infinity): BarSpan {
   const from = Math.floor(t0 / tf) * tf - length * tf;
@@ -77,43 +84,76 @@ export function sideFlags(bid: ArrayLike<number>, ask: ArrayLike<number>, highli
 export type BarReader = (ids: string[], from: number, to: number, stepMs: number) => Promise<ColumnsFrame>;
 
 /**
- * The candles held for the highlight, by instruments, band and timeframe: what is missing is asked for at the ends, one question at a time,
- * and the forming candle (with the one before it) once a minute while it is wanted. `version` moves whenever a candle's numbers do.
+ * The candles held for the highlight, by instruments, band and timeframe, one question at a time. In this order: a candle read before it was
+ * whole (forming, or just ended) is read again once it is; then what the view needs and is not held, a chunk at a time, the newest first;
+ * then the forming candle once a minute. At most KEEP_BARS candles about the view are kept. `version` moves whenever a candle's numbers do.
  */
 export class DepthBars {
   #key = '';
+  /** The candles held: every candle of this span has been asked for (one with no recording is absent from `#bars`). */
   #have: BarSpan | null = null;
   readonly #bars = new Map<number, { bid: number; ask: number }>();
+  /** Candles read before they were whole: read again once they are. */
+  readonly #open = new Set<number>();
   #busy = false; #liveAt = 0; #failedAt = 0;
   version = 0;
   #judged: { key: string; flags: Uint8Array } | null = null;
 
   constructor(private read: BarReader) {}
 
+  /** How many candles are held. */
+  get size(): number { return this.#bars.size; }
+
   /**
    * Make sure the candles of `need` are held, asking for what is not; `now` is the real time (the forming candle is the one holding it).
-   * `changed` is called once an answer has been taken in.
+   * `need` must not reach past the forming candle (`neededBars` with `until`): the future holds no recording. `changed` is called once
+   * an answer has been taken in.
    */
   ensure(ids: readonly string[], range: number, tf: number, need: BarSpan, now: number, changed: () => void): void {
     const key = `${[...ids].sort().join(',')}|${range}|${tf}`;
-    if (key !== this.#key) { this.#key = key; this.#have = null; this.#bars.clear(); this.#liveAt = 0; this.version++; }
+    if (key !== this.#key) { this.#key = key; this.#have = null; this.#bars.clear(); this.#open.clear(); this.#liveAt = 0; this.version++; }
     if (this.#busy || !ids.length || now - this.#failedAt < 30_000) return;
-    const forming = Math.floor(now / tf) * tf;
-    let ask = missingSpans(this.#have, need)[0];
-    // The candles that may still change: the forming one, and the one before it until it has been read whole.
-    if (!ask && need.to > forming - tf && now - this.#liveAt >= LIVE_BAR_MS) ask = { from: Math.max(need.from, forming - tf), to: need.to };
+    const forming = Math.floor(now / tf) * tf, ask = this.#next(need, tf, now, forming);
     if (!ask) return;
-    const asked = ask, live = asked.to > forming - tf;
     this.#busy = true;
-    this.read([...ids], asked.from, asked.to, tf).then(frame => {
+    this.read([...ids], ask.from, ask.to, tf).then(frame => {
       if (key !== this.#key) return;
-      for (const bar of barTotals(frame, asked, tf, range)) this.#bars.set(bar.t, { bid: bar.bid, ask: bar.ask });
-      // What was asked joins what is held when the two touch (the stretches asked for are the ends of it); a stretch elsewhere replaces it.
-      const have = this.#have;
-      this.#have = have && asked.from <= have.to && asked.to >= have.from ? { from: Math.min(have.from, asked.from), to: Math.max(have.to, asked.to) } : asked;
-      if (live) this.#liveAt = now;
+      // The server answers at most eight days of columns: a question it cut short holds only what came back.
+      const got = { from: Math.max(ask.from, Math.ceil(frame.from / tf) * tf), to: ask.to };
+      for (let t = got.from; t < got.to; t += tf) {
+        this.#bars.delete(t);
+        if (t + tf + SETTLE_MS <= now) this.#open.delete(t); else this.#open.add(t);
+      }
+      for (const bar of barTotals(frame, got, tf, range)) this.#bars.set(bar.t, { bid: bar.bid, ask: bar.ask });
+      if (ask.from <= forming && forming < ask.to) this.#liveAt = now;
+      this.#hold(got, need, tf);
       this.version++; changed();
     }, () => { this.#failedAt = now; }).finally(() => { this.#busy = false; });
+  }
+
+  /** What to ask next (see the class), or null. */
+  #next(need: BarSpan, tf: number, now: number, forming: number): BarSpan | null {
+    const chunk = Math.max(1, Math.min(CHUNK_BARS, Math.floor(CHUNK_MS / tf))) * tf;
+    let first = Infinity;
+    for (const t of this.#open) if (t >= need.from && t < need.to && t + tf + SETTLE_MS <= now && t < first) first = t;
+    if (first < Infinity) return { from: first, to: Math.min(need.to, first + chunk, Math.max(first + tf, forming + tf)) };
+    const missing = missingSpans(this.#have, need).at(-1);
+    if (missing) return { from: Math.max(missing.from, missing.to - chunk), to: missing.to };
+    if (forming >= need.from && forming < need.to && now - this.#liveAt >= LIVE_BAR_MS) return { from: forming, to: forming + tf };
+    return null;
+  }
+
+  /** Join what came back to what is held (a stretch that does not touch it replaces it), and keep at most KEEP_BARS candles about the view. */
+  #hold(got: BarSpan, need: BarSpan, tf: number): void {
+    const have = this.#have;
+    let span = have && got.from <= have.to && got.to >= have.from ? { from: Math.min(have.from, got.from), to: Math.max(have.to, got.to) } : got;
+    if ((span.to - span.from) / tf > KEEP_BARS) {
+      const margin = Math.max(0, Math.floor((KEEP_BARS - (need.to - need.from) / tf) / 2)) * tf;
+      span = { from: Math.max(span.from, need.from - margin), to: Math.min(span.to, need.to + margin) };
+    }
+    this.#have = span;
+    for (const t of this.#bars.keys()) if (t < span.from || t >= span.to) this.#bars.delete(t);
+    for (const t of this.#open) if (t < span.from || t >= span.to) this.#open.delete(t);
   }
 
   /** The flags of the candles of `need` (Highlights' rule over the candles held; a candle not held is not judged and not flagged). */

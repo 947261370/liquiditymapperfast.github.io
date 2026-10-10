@@ -301,7 +301,8 @@ export class DepthPane extends TimePane {
    */
   #highlight(s: { t0: number; t1: number; w: number; bid: Float32Array; ask: Float32Array }, state: AppState): Uint8Array {
     const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, h = state.highlight;
-    const need = neededBars(s.t0, s.t1, tf, h.length, replaying() ? pageNow() : Infinity);
+    // Up to the replay's moment, or live to the end of the forming candle (the real clock: what is recorded).
+    const need = neededBars(s.t0, s.t1, tf, h.length, replaying() ? pageNow() : (Math.floor(Date.now() / tf) + 1) * tf);
     if (fitsBars(need, tf)) {
       this.#bars.ensure(marketIds(state), this.#range, tf, need, Date.now(), () => this.invalidate());
       const key = `bars|${this.#bars.version}|${need.from}|${need.to}|${tf}|${h.length}|${h.mult}`;
