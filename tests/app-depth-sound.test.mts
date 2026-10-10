@@ -6,6 +6,7 @@ import { DEFAULT_PANEL_SOUNDS, readSounds, type Note } from '../src/app/sound/ru
 import { FlowBook } from '../src/app/flow-book.ts';
 import { initialState } from '../src/app/store.ts';
 import type { ColumnSet, ColumnsFrame } from '../src/app/wire.ts';
+import { startReplay, stopReplay } from '../src/app/replay/clock.ts';
 
 const MIN = 60_000, HOUR = 3_600_000;
 const T0 = Date.UTC(2026, 9, 10, 0, 0, 0);
@@ -100,6 +101,51 @@ test('the depth sound loads its hours an hour at a time, then reads each committ
   state.sounds = readSounds({ ...state.sounds, panels: { ...state.sounds.panels, depthPane: { ...state.sounds.panels.depthPane, extreme: false } } });
   const before = asked.length; now += 5 * MIN; alerts.tick(now); await settle();
   assert.equal(asked.length, before); assert.equal(alerts.depthState, null);
+});
+
+/** A depth sound over two venues and the last two hours, read through `book`; `hold` keeps an answer back until `release` is called. */
+function depthRig(book: (t: number) => { bid: number; ask: number }) {
+  const state = initialState();
+  state.markets = [{ instrumentId: 'a:BTC', venue: 'a', marketType: 'perpetual' }, { instrumentId: 'b:BTC', venue: 'b', marketType: 'perpetual' }];
+  state.sounds = readSounds({ on: true, volume: 1, panels: { ...DEFAULT_PANEL_SOUNDS, depthPane: { extreme: true, range: 0.2, pct: 99, hours: 2 } } });
+  const rig = { state, now: T0 + 2 * HOUR + 20_000, hold: false, release: () => {}, asked: [] as [number, number][], player: new FakePlayer(), alerts: null as unknown as Alerts };
+  rig.alerts = new Alerts({ state }, new FlowBook(), rig.player, () => rig.now, undefined, (ids, from, to) => {
+    rig.asked.push([from, to]);
+    const answer = frame(ids, from, to, (_, t) => book(t));
+    return rig.hold ? new Promise(resolve => { rig.release = () => resolve(answer); }) : Promise.resolve(answer);
+  });
+  return rig;
+}
+/** An ordinary balance, a different one each minute: bids 0 to 19 above the asks' 500. */
+const usual = (t: number) => ({ bid: 500 + ((t / MIN) * 37) % 20, ask: 500 });
+async function load(rig: ReturnType<typeof depthRig>): Promise<void> { for (let i = 0; i < 3; i++) { rig.alerts.tick(rig.now); await settle(); } }
+
+test('an answer that comes after a replay began, or after the sound was switched off, plays nothing', async () => {
+  const extreme = T0 + 2 * HOUR;
+  for (const interrupt of ['replay', 'off'] as const) {
+    const rig = depthRig(t => t === extreme ? { bid: 900, ask: 100 } : usual(t));
+    await load(rig);
+    rig.now = T0 + 2 * HOUR + MIN + 15_000; rig.hold = true; rig.alerts.tick(rig.now); await settle();
+    assert.deepEqual(rig.asked.at(-1), [extreme, extreme + MIN], 'the extreme minute is being asked for');
+    if (interrupt === 'replay') startReplay(T0); else rig.state.sounds = readSounds({ ...rig.state.sounds, panels: { ...rig.state.sounds.panels, depthPane: { ...rig.state.sounds.panels.depthPane, extreme: false } } });
+    try { rig.release(); await settle(); } finally { stopReplay(); }
+    assert.equal(rig.player.played.length, 0, interrupt); assert.equal(rig.alerts.log.length, 0, interrupt);
+  }
+});
+
+test('after a pause of hours the minutes caught up still re-arm the watch, so the next extreme sounds', async () => {
+  // An extreme at 2:00, back to usual for two hours, then a little above usual (not enough to re-arm) and a fresh extreme at 4:10.
+  const first = T0 + 2 * HOUR, second = T0 + 4 * HOUR + 10 * MIN;
+  const rig = depthRig(t => t === first || t === second ? { bid: 900, ask: 100 } : t > T0 + 4 * HOUR ? { bid: 515, ask: 500 } : usual(t));
+  await load(rig);
+  rig.now = first + MIN + 15_000; rig.alerts.tick(rig.now); await settle();
+  assert.equal(rig.player.played.length, 1, 'the first extreme');
+  // The tab sleeps until 4:11: three questions catch up, the last one only ten minutes long.
+  rig.now = second + MIN + 15_000;
+  for (let i = 0; i < 4; i++) { rig.alerts.tick(rig.now); await settle(); }
+  assert.deepEqual(rig.asked.slice(-3).map(([from, to]) => (to - from) / MIN), [60, 60, 10]);
+  assert.equal(rig.player.played.length, 2, 'the second extreme sounds: the usual hours in between re-armed it');
+  assert.equal(rig.alerts.log[1]!.side, 'buy');
 });
 
 test('a minute judged long after it ended does not sound', async () => {

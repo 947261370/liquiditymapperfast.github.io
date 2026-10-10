@@ -203,8 +203,8 @@ export class Alerts {
 
   /**
    * Reads the recording a minute at a time, once each minute has been committed, and judges it against the hours before (`DepthWatch`).
-   * Those hours are loaded an hour per question when the sound starts, or when the instruments, the band or the hours change; only the
-   * minutes of the question that reaches the present are judged, and only a fresh one sounds. Nothing is read while the sound is off.
+   * Those hours are loaded an hour per question when the sound starts, or when the instruments, the band or the hours change, and judged
+   * on the way (silently: they are history); only a fresh minute sounds. Nothing is read while the sound is off.
    */
   #depthPane(now: number): void {
     const s = this.#s, rule = s.sounds.panels.depthPane;
@@ -225,11 +225,13 @@ export class Alerts {
       const minutes = depthMinutes(frame, from, to, rule.range);
       this.#depth.add(minutes, to - rule.hours * HOUR - MINUTE);
       this.#depthTo = to;
-      const live = to === settled;
-      this.depthState = { minutes: this.#depth.size, loading: !live };
-      if (live) for (const m of minutes) {
+      this.depthState = { minutes: this.#depth.size, loading: to < settled };
+      // Every minute goes through the watch in order, the hours loaded at the start and those caught up after a pause too, so it re-arms
+      // where the balance came back to its usual; only a fresh minute sounds, and only while the rule is still on and no replay has
+      // begun since the question was asked (the answer can come after either).
+      for (const m of minutes) {
         const signal = this.#depth.judge(m.t, rule);
-        if (!signal || this.clock() - (m.t + MINUTE) > DEPTH_FRESH_MS) continue;
+        if (!signal || this.clock() - (m.t + MINUTE) > DEPTH_FRESH_MS || replaying() || !this.#s.sounds.panels.depthPane.extreme) continue;
         const change = (v: number, usual: number): string => usual > 0 ? `${v >= usual ? '+' : '-'}${Math.round(Math.abs(v / usual - 1) * 100)}%` : '–';
         const values = { range: `${Math.round(rule.range * 1_000) / 10}%`, pct: String(rule.pct), hours: String(rule.hours), bids: change(signal.bid, signal.usualBid), asks: change(signal.ask, signal.usualAsk) };
         this.#fire(this.clock(), 'depthPane', 'depth-extreme', signal.side, signal.side === 'buy'
