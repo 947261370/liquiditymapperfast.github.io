@@ -3,6 +3,7 @@ import { gridStepFor } from '../../shared/grid.ts';
 import type { ColumnSet, LiveBook } from '../wire.ts';
 import { ltSeries, type LtParams, type LtStore } from '../lt.ts';
 import { shareInCell, type CellShare } from '../cell-sources.ts';
+import { depthSeries } from '../depth-series.ts';
 import { dropAbsent } from './membership.ts';
 
 /** A set of recorded or live columns for one instrument, flat for the raster kernel. */
@@ -12,7 +13,7 @@ export type WorkerIn =
   | { type: 'columns'; stepMs: number; instruments: ColumnSet[] }
   | { type: 'live'; books: LiveBook[]; now: number }
   | { type: 'raster'; id: number; enabled: string[]; t0: number; t1: number; p0: number; p1: number; w: number; h: number; smooth: boolean }
-  | { type: 'depth'; id: number; enabled: string[]; t0: number; t1: number; w: number; range: number; mids: Float64Array }
+  | { type: 'depth'; id: number; enabled: string[]; t0: number; t1: number; w: number; range: number }
   | { type: 'lt'; id: number; enabled: string[]; t0: number; t1: number; params: LtParams }
   | { type: 'cell'; id: number; enabled: string[]; t0: number; t1: number; p0: number; p1: number };
 export type { CellShare };
@@ -121,37 +122,11 @@ function raster(message: Extract<WorkerIn, { type: 'raster' }>): void {
   scope.postMessage({ type: 'raster', id: message.id, w: message.w, h: message.h, data, stats, busyMs: performance.now() - started }, [data.buffer]);
 }
 
-/** Bid and ask USD within +-range of each pixel column's mid price, summed over venues. */
+/** Bid and ask USD within +-range of the books' own price in each pixel column, summed over venues (`depthSeries`). */
 function depth(message: Extract<WorkerIn, { type: 'depth' }>): void {
-  const { w, t0, t1, range, mids } = message;
-  const bid = new Float32Array(w), ask = new Float32Array(w);
-  const pxMs = (t1 - t0) / w;
-  for (const id of message.enabled) {
-    const rec = recorded.get(id);
-    if (!rec) continue;
-    const sumB = new Float64Array(w), sumA = new Float64Array(w), n = new Float64Array(w);
-    let at = 0;
-    for (let c = 0; c < rec.times.length; c++) {
-      const count = rec.counts[c]!, t = rec.times[c]!;
-      const x0 = Math.max(0, Math.floor((t - t0) / pxMs)), x1 = Math.min(w - 1, Math.floor((t + recordedStepMs - 1 - t0) / pxMs));
-      if (x1 >= 0 && x0 < w && count > 0) {
-        for (let x = x0; x <= x1; x++) {
-          const mid = mids[x]!;
-          if (!(mid > 0)) continue;
-          const lo = mid * (1 - range), hi = mid * (1 + range);
-          let b = 0, a = 0;
-          for (let e = at; e < at + count; e++) {
-            const price = rec.bins[e]! * rec.step;
-            if (price >= lo && price < mid) b += rec.bid[e]!; else if (price >= mid && price <= hi) a += rec.ask[e]!;
-          }
-          sumB[x]! += b; sumA[x]! += a; n[x]! += 1;
-        }
-      }
-      at += count;
-    }
-    for (let x = 0; x < w; x++) if (n[x]! > 0) { bid[x]! += sumB[x]! / n[x]!; ask[x]! += sumA[x]! / n[x]!; }
-  }
-  scope.postMessage({ type: 'depth', id: message.id, w, bid, ask }, [bid.buffer, ask.buffer]);
+  const stores = message.enabled.map(id => recorded.get(id)).filter((rec): rec is Store => rec !== undefined);
+  const { bid, ask } = depthSeries(stores, recordedStepMs, message.t0, message.t1, message.w, message.range);
+  scope.postMessage({ type: 'depth', id: message.id, w: message.w, bid, ask }, [bid.buffer, ask.buffer]);
 }
 
 /** Which instruments make up one cell of the map, so the popup can say where the liquidity under the pointer comes from. */

@@ -531,10 +531,10 @@ export class Hub {
   /** Executions per candle for a window (the footprint). */
   footprint(inst: string, tf: string, from: number, to: number, rowStep: number): Promise<FootprintResponse> { return this.source.footprint(inst, tf, from, to, rowStep); }
 
-  /** Depth (USD within +-range of mid) per pixel column over [t0, t1]. */
-  depth(enabled: string[], t0: number, t1: number, w: number, range: number, mids: Float64Array): Promise<{ bid: Float32Array; ask: Float32Array }> {
+  /** Depth (USD within +-range of the books' own price) per pixel column over [t0, t1]. */
+  depth(enabled: string[], t0: number, t1: number, w: number, range: number): Promise<{ bid: Float32Array; ask: Float32Array }> {
     const id = ++this.#rasterId + 1_000_000;
-    return new Promise(resolve => { this.#depthWaiters.set(id, resolve); this.#post({ type: 'depth', id, enabled, t0, t1, w, range, mids }); });
+    return new Promise(resolve => { this.#depthWaiters.set(id, resolve); this.#post({ type: 'depth', id, enabled, t0, t1, w, range }); });
   }
 
   /** What each enabled instrument holds in the map cell [t0, t1) x [p0, p1). */

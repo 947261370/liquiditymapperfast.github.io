@@ -226,16 +226,8 @@ export class DepthPane extends TimePane {
       this.#key = key; this.#busy = true;
       const asked = this.#askedAt = performance.now();
       const w = depthColumns(pw);
-      const mids = new Float64Array(w);
-      const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000;
-      for (let x = 0; x < w; x++) {
-        const t = v.t0 + (x + 0.5) / w * (v.t1 - v.t0);
-        let close = state.mark.price;
-        for (let i = state.candles.length - 1; i >= 0; i--) { const c = state.candles[i]!; if (c[0] <= t) { close = t < c[0] + tf ? c[4] : close; if (c[0] <= t) break; } }
-        mids[x] = close;
-      }
       const t0 = v.t0, t1 = v.t1;
-      void this.hub.depth(ids, t0, t1, w, this.#range, mids).then(r => { this.#tookMs = performance.now() - asked; this.#series = { t0, t1, w, bid: r.bid, ask: r.ask }; this.#busy = false; this.invalidate(); }, () => { this.#busy = false; });
+      void this.hub.depth(ids, t0, t1, w, this.#range).then(r => { this.#tookMs = performance.now() - asked; this.#series = { t0, t1, w, bid: r.bid, ask: r.ask }; this.#busy = false; this.invalidate(); }, () => { this.#busy = false; });
     }
     const s = this.#series;
     const readout = this.head.querySelector('.readout');
