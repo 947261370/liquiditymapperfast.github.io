@@ -27,8 +27,16 @@ export function touchOf(store: DepthStore, at: number, count: number): number {
  * centre already was that price. Counted this way there were none.
  */
 export function depthSeries(stores: readonly DepthStore[], stepMs: number, t0: number, t1: number, w: number, range: number): DepthSeries {
-  const bid = new Float32Array(w), ask = new Float32Array(w), mid = new Float64Array(w).fill(NaN);
-  if (!(w > 0) || !(t1 > t0)) return { bid, ask, mid };
+  const by = depthByStore(stores, stepMs, t0, t1, w, range), bid = new Float32Array(w), ask = new Float32Array(w);
+  for (let i = 0; i < stores.length; i++) for (let x = 0; x < w; x++) { bid[x]! += by.bid[i]![x]!; ask[x]! += by.ask[i]![x]!; }
+  return { bid, ask, mid: by.mid };
+}
+
+/** `depthSeries` before the instruments are added together: each store's bid and ask per pixel, and whether it had a column there. */
+export interface DepthByStore { mid: Float64Array; bid: Float32Array[]; ask: Float32Array[]; present: Uint8Array[] }
+export function depthByStore(stores: readonly DepthStore[], stepMs: number, t0: number, t1: number, w: number, range: number): DepthByStore {
+  const mid = new Float64Array(w).fill(NaN), out: DepthByStore = { mid, bid: stores.map(() => new Float32Array(w)), ask: stores.map(() => new Float32Array(w)), present: stores.map(() => new Uint8Array(w)) };
+  if (!(w > 0) || !(t1 > t0)) return out;
   const pxMs = (t1 - t0) / w, m = stores.length;
   const first = (t: number): number => Math.max(0, Math.floor((t - t0) / pxMs)), last = (t: number): number => Math.min(w - 1, Math.floor((t + stepMs - 1 - t0) / pxMs));
   const touch = new Float64Array(w * m), seen = new Uint32Array(w * m);
@@ -47,7 +55,7 @@ export function depthSeries(stores: readonly DepthStore[], stepMs: number, t0: n
     if (row.length) { row.sort((a, b) => a - b); mid[x] = row[row.length >> 1]!; }
   }
   const sumB = new Float64Array(w), sumA = new Float64Array(w), n = new Float64Array(w);
-  for (const store of stores) {
+  stores.forEach((store, i) => {
     sumB.fill(0); sumA.fill(0); n.fill(0);
     for (let c = 0, at = 0; c < store.times.length; at += store.counts[c]!, c++) {
       const count = store.counts[c]!, x0 = first(store.times[c]!), x1 = last(store.times[c]!);
@@ -60,7 +68,8 @@ export function depthSeries(stores: readonly DepthStore[], stepMs: number, t0: n
         sumB[x]! += b; sumA[x]! += a; n[x]! += 1;
       }
     }
-    for (let x = 0; x < w; x++) if (n[x]! > 0) { bid[x]! += sumB[x]! / n[x]!; ask[x]! += sumA[x]! / n[x]!; }
-  }
-  return { bid, ask, mid };
+    const bid = out.bid[i]!, ask = out.ask[i]!, present = out.present[i]!;
+    for (let x = 0; x < w; x++) if (n[x]! > 0) { bid[x] = sumB[x]! / n[x]!; ask[x] = sumA[x]! / n[x]!; present[x] = 1; }
+  });
+  return out;
 }

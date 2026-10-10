@@ -15,8 +15,13 @@ export interface PanelSounds {
   bars: { delta: boolean; usd: number };
   /** Order book and heatmap: a wall of at least `usd` appeared near the price, or an established one was pulled without being traded through. */
   book: { wall: boolean; usd: number };
-  /** Depth and Liquidity Tracker: the bids against the asks within 1 % of the price tipped past `pct` percent one way. */
+  /** Liquidity Tracker: the bids against the asks within 1 % of the price tipped past `pct` percent one way. */
   depth: { imbalance: boolean; pct: number };
+  /**
+   * Depth pane: the imbalance of the bids and asks within `range` of the price, over a recorded minute, went past percentile `pct` of the
+   * minutes of the `hours` before it (`depth-watch.ts`).
+   */
+  depthPane: { extreme: boolean; range: number; pct: number; hours: number };
   /** Open interest: a candle closed with an unusual change in open interest (the sensitivity is Highlights'). */
   oi: { jump: boolean };
 }
@@ -26,8 +31,14 @@ export const DEFAULT_PANEL_SOUNDS: Readonly<PanelSounds> = Object.freeze({
   bars: { delta: false, usd: 5_000_000 },
   book: { wall: false, usd: 20_000_000 },
   depth: { imbalance: false, pct: 70 },
+  // The 99th percentile of six hours: on 36 hours of BTC (2026-10-10, ±20 %) that sounded 10 times, the 95th 18 times.
+  depthPane: { extreme: false, range: 0.2, pct: 99, hours: 6 },
   oi: { jump: false },
 });
+/** The bands the depth sound can add up, as the Depth pane's Range offers them. */
+export const DEPTH_RANGES = [0.01, 0.02, 0.05, 0.1, 0.2] as const;
+/** Longest baseline: the hours are loaded when the sound starts, about 3 MB of recording an hour from a server. */
+export const DEPTH_MAX_HOURS = 12;
 
 const flag = (value: unknown, fallback: boolean): boolean => typeof value === 'boolean' ? value : fallback;
 const bound = (value: unknown, min: number, max: number, fallback: number): number => typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
@@ -39,6 +50,8 @@ export function readPanelSounds(saved: unknown): PanelSounds {
     bars: { delta: flag(o.bars?.delta, d.bars.delta), usd: Math.round(bound(o.bars?.usd, 100_000, 1_000_000_000, d.bars.usd)) },
     book: { wall: flag(o.book?.wall, d.book.wall), usd: Math.round(bound(o.book?.usd, 500_000, 5_000_000_000, d.book.usd)) },
     depth: { imbalance: flag(o.depth?.imbalance, d.depth.imbalance), pct: Math.round(bound(o.depth?.pct, 30, 95, d.depth.pct)) },
+    depthPane: { extreme: flag(o.depthPane?.extreme, d.depthPane.extreme), range: DEPTH_RANGES.includes(o.depthPane?.range as never) ? o.depthPane!.range as number : d.depthPane.range,
+      pct: Math.round(bound(o.depthPane?.pct, 90, 99.9, d.depthPane.pct) * 10) / 10, hours: Math.round(bound(o.depthPane?.hours, 2, DEPTH_MAX_HOURS, d.depthPane.hours)) },
     oi: { jump: flag(o.oi?.jump, d.oi.jump) },
   };
 }
@@ -152,11 +165,12 @@ export function chimeNotes(volume: number): Note[] {
 }
 
 /** What an alert sounds like. Each panel has its own register and wave, so the ear can tell the panel before the eye finds it. */
-export type AlertKind = 'flow-burst' | 'bar-delta' | 'wall-appeared' | 'wall-pulled' | 'imbalance' | 'oi-jump';
+export type AlertKind = 'flow-burst' | 'bar-delta' | 'wall-appeared' | 'wall-pulled' | 'imbalance' | 'depth-extreme' | 'oi-jump';
 
 /**
  * Notes for a panel alert. Buying rises and selling falls (a bid-heavy book rises, an ask-heavy one falls), as the trade sounds do.
- * Flow is a high sine sweep, bars a mid triangle, walls a low sine thud, imbalance three triangle steps, open interest a double tick.
+ * Flow is a high sine sweep, bars a mid triangle, walls a low sine thud, imbalance three triangle steps, the extreme depth a slow low swell
+ * of two sines, open interest a double tick.
  */
 export function alertNotes(kind: AlertKind, side: 'buy' | 'sell' | null, volume: number): Note[] {
   const up = side !== 'sell', v = volume;
@@ -170,6 +184,7 @@ export function alertNotes(kind: AlertKind, side: 'buy' | 'sell' | null, volume:
     case 'wall-appeared': return [{ freq: up ? 164.81 : 130.81, gain: 0.3 * v, decay: 0.5, delay: 0, wave: 'sine' }, { freq: up ? 196 : 98, gain: 0.26 * v, decay: 0.6, delay: 0.12, wave: 'sine' }];
     case 'wall-pulled': return [{ freq: up ? 196 : 98, gain: 0.26 * v, decay: 0.4, delay: 0, wave: 'sine' }, { freq: up ? 130.81 : 82.41, gain: 0.22 * v, decay: 0.6, delay: 0.12, wave: 'sine' }];
     case 'imbalance': return (up ? [392, 493.88, 587.33] : [587.33, 493.88, 392]).map((freq, i) => ({ freq, gain: 0.14 * v, decay: 0.3, delay: i * 0.1, wave: 'triangle' as const }));
+    case 'depth-extreme': return (up ? [220, 329.63] : [329.63, 220]).map((freq, i) => ({ freq, gain: (i ? 0.26 : 0.22) * v, decay: i ? 0.9 : 0.6, delay: i * 0.22, wave: 'sine' as const }));
     case 'oi-jump': return [{ freq: 1046.5, gain: 0.1 * v, decay: 0.12, delay: 0, wave: 'sine' }, { freq: 1046.5, gain: 0.1 * v, decay: 0.12, delay: 0.11, wave: 'sine' }];
   }
 }

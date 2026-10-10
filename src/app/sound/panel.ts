@@ -1,7 +1,8 @@
 import { el } from '../dom.ts';
 import type { Store } from '../store.ts';
 import { button, heading, note, numberRow, rangeRow, selectRow, switchRow } from '../ui.ts';
-import { MIN_TIER_USD, readSounds, type SoundSettings } from './rules.ts';
+import { DEPTH_MAX_HOURS, DEPTH_RANGES, MIN_TIER_USD, readSounds, type SoundSettings } from './rules.ts';
+import { DEPTH_MIN_BASELINE } from './depth-watch.ts';
 import type { Sounds } from './sounds.ts';
 import type { Alerts } from './alerts.ts';
 import type { PanelSounds } from './rules.ts';
@@ -47,18 +48,25 @@ export function buildSoundPanel(store: Store, sounds: Sounds, rerender: () => vo
 }
 
 /** The panel sounds that can also be switched on in the pane they are about. */
-export type PanelSwitch = 'flow' | 'bars' | 'depth';
+export type PanelSwitch = 'flow' | 'bars' | 'depth' | 'depthPane';
 const SWITCH_TEXT: Record<PanelSwitch, { name: string; tip: string }> = {
+  depthPane: { name: t('Extreme depth balance'), tip: t('Over a recorded minute, the bids against the asks within the range below went further one way than in all but the rarest minutes of the hours before (at 99, one minute in a hundred). It sounds once, and again only after the balance has come back to its usual. A slow, low swell, rising when the bids are heavier.') },
   flow: { name: t('Burst of taker flow'), tip: t("An exchange bought or sold far more at market in ten seconds than it usually does. High, two-note sweep. Bursts are also marked on the flow column's lines, sound or not; its settings switch the marks.") },
   bars: { name: t('Candle closes with a big delta'), tip: t('When a candle closes, the net taker flow of every enabled venue over it was at least this much. Mid, two-note triangle.') },
   depth: { name: t('The balance tips'), tip: t('Within 1% of the price, the bids outweigh the asks (or the other way round) by more than this share. It sounds once and again only after the book has come back. Three steps.') },
 };
-export const panelSwitchOn = (store: Store, which: PanelSwitch): boolean => which === 'flow' ? store.state.sounds.panels.flow.burst : which === 'bars' ? store.state.sounds.panels.bars.delta : store.state.sounds.panels.depth.imbalance;
+export const panelSwitchOn = (store: Store, which: PanelSwitch): boolean => {
+  const p = store.state.sounds.panels;
+  return which === 'flow' ? p.flow.burst : which === 'bars' ? p.bars.delta : which === 'depth' ? p.depth.imbalance : p.depthPane.extreme;
+};
 export function setPanelSwitch(store: Store, which: PanelSwitch, on: boolean): void {
   const p = store.state.sounds.panels;
-  const panels = which === 'flow' ? { ...p, flow: { ...p.flow, burst: on } } : which === 'bars' ? { ...p, bars: { ...p.bars, delta: on } } : { ...p, depth: { ...p.depth, imbalance: on } };
+  const panels = which === 'flow' ? { ...p, flow: { ...p.flow, burst: on } } : which === 'bars' ? { ...p, bars: { ...p.bars, delta: on } }
+    : which === 'depth' ? { ...p, depth: { ...p.depth, imbalance: on } } : { ...p, depthPane: { ...p.depthPane, extreme: on } };
   store.set({ sounds: readSounds({ ...store.state.sounds, panels }) });
 }
+/** What a pane's own Sound box says it does (the switch's description). */
+export const panelSwitchTip = (which: PanelSwitch): string => SWITCH_TEXT[which].tip;
 /** The same switch as in the Sounds panel, for the pane's own settings: both read and write `sounds.panels`, so they never disagree. */
 export const panelSwitchRow = (store: Store, which: PanelSwitch, onChange: () => void = () => {}): HTMLElement =>
   switchRow(SWITCH_TEXT[which].name, SWITCH_TEXT[which].tip, panelSwitchOn(store, which), on => { setPanelSwitch(store, which, on); onChange(); });
@@ -103,7 +111,16 @@ function panelSounds(store: Store, p: PanelSounds, alerts: Alerts, set: (change:
     numberRow(t('Smallest wall (USD)'), t('Added up across the enabled venues at one price.'), { min: scaledUsd(500_000), step: scaledUsd(1_000_000), value: scaledUsd(p.book.usd) }, usd => change('book', { usd: unscaledUsd(usd) })),
     tests('wall-appeared'));
 
-  body.append(heading(t('Depth and Liquidity Tracker')),
+  const depth = p.depthPane, state = alerts.depthState;
+  body.append(heading(t('Depth pane')),
+    panelSwitchRow(store, 'depthPane', () => rerender()),
+    selectRow(t('Range'), t("Bids and asks within this distance of the price are added up, as the Depth pane's Range does."), DEPTH_RANGES.map(r => [String(r), `${Math.round(r * 1_000) / 10}%`] as [string, string]), String(depth.range), v => change('depthPane', { range: Number(v) })),
+    numberRow(t('Percentile'), t('How rare the balance must be: at 99, only one recorded minute in a hundred of the hours before went further.'), { min: 90, max: 99.9, step: 0.5, value: depth.pct }, pct => change('depthPane', { pct })),
+    numberRow(t('Compared with (hours)'), t('The hours the percentile is taken over. They are loaded when the sound starts, about 3 MB an hour from a server.'), { min: 2, max: DEPTH_MAX_HOURS, step: 1, value: depth.hours }, hours => change('depthPane', { hours })),
+    ...(state ? [note(state.loading || state.minutes < DEPTH_MIN_BASELINE ? t('Loading the recording: {n} min so far', { n: String(state.minutes) }) : t('Judging each minute against {n} min of recording', { n: String(state.minutes) }))] : []),
+    tests('depth-extreme'));
+
+  body.append(heading(t('Liquidity Tracker')),
     panelSwitchRow(store, 'depth', () => rerender()),
     numberRow(t('Tips at (%)'), t('(bids - asks) / (bids + asks), in percent.'), { min: 30, max: 95, step: 5, value: p.depth.pct }, pct => change('depth', { pct })),
     tests('imbalance'));

@@ -19,7 +19,7 @@ import { el } from '../dom.ts';
 import { button, checkRow, heading, note, numberRow, selectRow, sortableList, togglePanel, type Panel } from '../ui.ts';
 import type { LtSeries } from '../lt.ts';
 import { GestureRecognizer, bindTouch, type GestureHandlers, type Pt } from '../touch.ts';
-import { panelSwitchRow, panelSwitchOn, setPanelSwitch } from '../sound/panel.ts';
+import { panelSwitchRow, panelSwitchOn, panelSwitchTip, setPanelSwitch } from '../sound/panel.ts';
 import { t, tn } from '../i18n.ts';
 import { scaledUsd, unscaledUsd } from '../coin.ts';
 import { DRAG_MIN_PX, selects } from '../range/selection.ts';
@@ -195,6 +195,8 @@ export class DepthPane extends TimePane {
   /** The pane is too short for a popup drawn on it, so what the pointer is over is said in a page element. */
   #card = new HoverCard();
   #lines: InfoLine[] | null = null;
+  /** The Sound box in the header (the depth sound's switch). */
+  #bell = document.createElement('input');
   constructor(host: HTMLElement, store: Store, view: View, private hub: Hub) {
     super(host, store, view, 'depth');
     this.head.innerHTML = `<strong>${t('Depth')}</strong><span class="readout"></span>`;
@@ -204,8 +206,15 @@ export class DepthPane extends TimePane {
     for (const r of [0.01, 0.02, 0.05, 0.1, 0.2]) select.append(new Option(`${r * 100}%`, String(r)));
     select.value = String(this.#range); select.onchange = () => { this.#range = Number(select.value); this.#key = ''; this.invalidate(); };
     label.append(select); this.head.append(label);
+    // An extreme balance can sound; its band, how rare and the hours it is judged against are in the Sounds panel.
+    const bell = document.createElement('label'); bell.className = 'ctl'; this.#bell.type = 'checkbox';
+    this.#bell.onchange = () => setPanelSwitch(this.store, 'depthPane', this.#bell.checked);
+    bell.append(this.#bell, t('Sound')); setTip(bell, panelSwitchTip('depthPane')); this.head.append(bell);
+    this.syncSound();
   }
   refresh(): void { this.#key = ''; this.invalidate(); }
+  /** Show the depth sound's switch as the settings have it (it is also in the Sounds panel). */
+  syncSound(): void { this.#bell.checked = panelSwitchOn(this.store, 'depthPane'); }
   protected draw(): void {
     this.#lines = null;
     this.#paint();

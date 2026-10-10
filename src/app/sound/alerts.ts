@@ -6,7 +6,7 @@ import { Cooldowns, RateCap, WallWatch, ImbalanceWatch, bookBins, imbalanceOf } 
 import { burst } from '../cvd/burst.ts';
 import { flowIds } from '../cvd/ids.ts';
 import { familyKey, venueOfInstrument } from '../cvd/families.ts';
-import { activeIds, kindOf } from '../scope.ts';
+import { activeIds, inScope, kindOf } from '../scope.ts';
 import { anomalies } from '../anomaly.ts';
 import { oiDeltas } from '../oi-change.ts';
 import { signedUsd } from '../cvd/text.ts';
@@ -17,8 +17,10 @@ import { t } from '../i18n.ts';
 import { scaledUsd } from '../coin.ts';
 import { usd } from '../format.ts';
 import { replaying } from '../replay/clock.ts';
+import { DepthWatch, depthMinutes } from './depth-watch.ts';
+import type { ColumnsFrame } from '../wire.ts';
 
-export type AlertPanel = 'flow' | 'bars' | 'book' | 'depth' | 'oi';
+export type AlertPanel = 'flow' | 'bars' | 'book' | 'depth' | 'depthPane' | 'oi';
 /** What was decided for one alert: kept for the panel's "recent" list and for the harness; audible is false when the engine was locked or muted. */
 export interface AlertEntry { at: number; panel: AlertPanel; kind: AlertKind; side: 'buy' | 'sell' | null; text: string; audible: boolean }
 
@@ -37,6 +39,27 @@ const MINUTE = 60_000;
 /** An exchange that traded in the five minutes before a candle began was recording when it began, and one whose flow starts later may only have started recording then. */
 const BAR_LOOKBACK_MS = 5 * MINUTE;
 const MAX_BURSTS = 300;
+const HOUR = 3_600_000;
+/** A recorded minute is asked for this long after it ends: the recorder commits it at its first sample of the next minute (every 5 s). */
+const DEPTH_SETTLE_MS = 12_000;
+/** A minute judged later than this after it ended (a tab that slept, an answer that came late) is history: it does not sound. */
+const DEPTH_FRESH_MS = 90_000;
+const DEPTH_COOLDOWN_MS = 300_000;
+/**
+ * The instruments the depth sound adds up: the markets of the enabled venues inside the Spot / Perp filter, from the market list and not
+ * from the books in the feed, so a book that drops out for a while is a gap in the recording (`DepthWatch` leaves such minutes out) rather
+ * than a new set of instruments that starts the hours of baseline loading again.
+ */
+export function depthIds(s: Pick<AppState, 'markets' | 'disabledVenues' | 'scope'>): string[] {
+  const ids = new Set<string>();
+  for (const m of s.markets) {
+    const id = m.instrumentId ?? m.id; if (!id) continue;
+    if (!s.disabledVenues.includes(m.venue ?? id.split(':')[0]!) && inScope(s.scope, s.markets, id)) ids.add(id);
+  }
+  return [...ids].sort();
+}
+/** The recorded columns of instruments over [from, to), one-minute steps (the page's data source). */
+export type ColumnsReader = (ids: string[], from: number, to: number) => Promise<ColumnsFrame>;
 
 /**
  * The sounds the panels may make beyond the large-trade tiers. Every rule is off until chosen, only fires on what is new (never on
@@ -56,13 +79,19 @@ export class Alerts {
   /** Which market and timeframe the candles (and the open-interest bars) being watched belong to: another one starts from scratch. */
   #barKey = ''; #oiKey = '';
   #timer: number | undefined;
+  /** The depth sound: its minutes, what they were loaded for, and where the next question starts (the end of the last one asked). */
+  readonly #depth = new DepthWatch();
+  #depthKey = ''; #depthTo = 0; #depthBusy = false; #depthWait = 0;
+  /** For the Sounds panel: complete minutes the depth sound holds, and whether it is still loading the hours before. Null while it is off. */
+  depthState: { minutes: number; loading: boolean } | null = null;
   onChange: () => void = () => {};
 
   /**
    * `ensure` asks for the flow history of instruments from a time on (the page's `ensureFlow`): the sum over a whole candle needs the whole
    * of it, and the flow column that normally asks for history may be hidden. Without it only what the flow book already holds can be summed.
+   * `columns` reads the recording for the depth sound; without it that sound never starts.
    */
-  constructor(private host: AlertsHost, private flow: FlowBook, private player: Player, private clock: () => number = Date.now, private ensure?: (ids: readonly string[], from: number) => void) {}
+  constructor(private host: AlertsHost, private flow: FlowBook, private player: Player, private clock: () => number = Date.now, private ensure?: (ids: readonly string[], from: number) => void, private columns?: ColumnsReader) {}
 
   start(): void { if (this.#timer === undefined) this.#timer = window.setInterval(() => this.tick(this.clock()), 1000); }
   stop(): void { if (this.#timer !== undefined) window.clearInterval(this.#timer); this.#timer = undefined; }
@@ -70,7 +99,7 @@ export class Alerts {
   /** One look at everything (every second); `now` is the clock, so a test steps it. */
   tick(now: number): void {
     if (replaying()) return;
-    this.#flow(now); this.#book(now); this.#bars(now); this.#oi(now);
+    this.#flow(now); this.#book(now); this.#bars(now); this.#depthPane(now); this.#oi(now);
   }
 
   get #s(): AppState { return this.host.state; }
@@ -168,6 +197,47 @@ export class Alerts {
       if (first === undefined || first * 1000 > late) return false;
     }
     return true;
+  }
+
+  // ---- The Depth pane: an extreme balance -------------------------------------------------------------------------------------------
+
+  /**
+   * Reads the recording a minute at a time, once each minute has been committed, and judges it against the hours before (`DepthWatch`).
+   * Those hours are loaded an hour per question when the sound starts, or when the instruments, the band or the hours change; only the
+   * minutes of the question that reaches the present are judged, and only a fresh one sounds. Nothing is read while the sound is off.
+   */
+  #depthPane(now: number): void {
+    const s = this.#s, rule = s.sounds.panels.depthPane;
+    if (!s.sounds.on || !rule.extreme || !this.columns) {
+      if (this.#depthKey) { this.#depth.reset(); this.#depthKey = ''; this.depthState = null; }
+      return;
+    }
+    const ids = depthIds(s), key = `${ids.join(',')}|${rule.range}|${rule.hours}`;
+    if (key !== this.#depthKey) { this.#depth.reset(); this.#depthKey = key; this.#depthTo = 0; this.#depthWait = 0; this.depthState = { minutes: 0, loading: true }; }
+    if (this.#depthBusy || now < this.#depthWait || !ids.length) return;
+    // Every minute before `settled` has been committed; the first question goes back the whole baseline, an hour at a time.
+    const settled = Math.floor((now - DEPTH_SETTLE_MS) / MINUTE) * MINUTE, from = this.#depthTo || settled - rule.hours * HOUR;
+    if (from >= settled) return;
+    const to = Math.min(settled, from + HOUR), reader = this.columns;
+    this.#depthBusy = true;
+    reader(ids, from, to).then(frame => {
+      if (key !== this.#depthKey) return;
+      const minutes = depthMinutes(frame, from, to, rule.range);
+      this.#depth.add(minutes, to - rule.hours * HOUR - MINUTE);
+      this.#depthTo = to;
+      const live = to === settled;
+      this.depthState = { minutes: this.#depth.size, loading: !live };
+      if (live) for (const m of minutes) {
+        const signal = this.#depth.judge(m.t, rule);
+        if (!signal || this.clock() - (m.t + MINUTE) > DEPTH_FRESH_MS) continue;
+        const change = (v: number, usual: number): string => usual > 0 ? `${v >= usual ? '+' : '-'}${Math.round(Math.abs(v / usual - 1) * 100)}%` : '–';
+        const values = { range: `${Math.round(rule.range * 1_000) / 10}%`, pct: String(rule.pct), hours: String(rule.hours), bids: change(signal.bid, signal.usualBid), asks: change(signal.ask, signal.usualAsk) };
+        this.#fire(this.clock(), 'depthPane', 'depth-extreme', signal.side, signal.side === 'buy'
+          ? t('Bids outweigh asks within {range} more than in {pct} % of the last {hours} h; bids {bids}, asks {asks} against usual', values)
+          : t('Asks outweigh bids within {range} more than in {pct} % of the last {hours} h; bids {bids}, asks {asks} against usual', values), 'depth-extreme', DEPTH_COOLDOWN_MS);
+      }
+      this.onChange();
+    }, () => { if (key === this.#depthKey) this.#depthWait = this.clock() + 30_000; }).finally(() => { this.#depthBusy = false; });
   }
 
   #oi(now: number): void {

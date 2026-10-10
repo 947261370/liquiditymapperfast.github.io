@@ -136,8 +136,9 @@ async function main(): Promise<void> {
   toolbar.onSelectMarket = id => store.set({ marketId: id });
   toolbar.onVenuesApplied = () => { void hub.refreshMarkets(); window.setTimeout(() => void hub.refreshMarkets(), 15_000); };
   const sounds = new Sounds(store); toolbar.attachSounds(sounds); sounds.start();
-  // Sounds the panels may make about what happens in them (flow bursts, walls, the balance, candle closes); the bursts are also marked on the flow column.
-  const alerts = new Alerts(store, hub.flow, sounds.engine, Date.now, (ids, from) => { void hub.ensureFlow(ids, from); }); toolbar.attachAlerts(alerts); alerts.start();
+  // Sounds the panels may make about what happens in them (flow bursts, walls, the balance, the depth, candle closes); the bursts are also marked on the flow column.
+  const alerts = new Alerts(store, hub.flow, sounds.engine, Date.now, (ids, from) => { void hub.ensureFlow(ids, from); }, (ids, from, to) => hub.source.columns(ids, from, to, 60_000));
+  toolbar.attachAlerts(alerts); alerts.start();
   alerts.onChange = () => cvd.invalidate(); cvd.events = alerts.bursts;
   hub.onPrints = fresh => { if (replaying()) return; sounds.feed(fresh); cvd.flash(fresh); };
   hub.onPrintsChanged = () => { heat.invalidate(); range.refreshHeld(); };
@@ -210,6 +211,7 @@ async function main(): Promise<void> {
     if (changed.has('layers') || changed.has('layer') || changed.has('candles') || changed.has('mark') || changed.has('heat') || changed.has('show')) heat.invalidate();
     if (changed.has('oi') || changed.has('show')) oi.invalidate();
     if (changed.has('lt') || changed.has('show') || changed.has('sounds')) lt.refresh();
+    if (changed.has('sounds')) depth.syncSound();
     if (changed.has('barStatOptions') && !changed.has('barStats')) bars.refresh();
     if (changed.has('barStats')) { arrange.setPaneHeight('bars', 12 + Math.max(1, enabledStats(state.barStats).length) * 24); bars.refresh(); }
     if (changed.has('grouping') || changed.has('ladderMode') || changed.has('ladderShow') || changed.has('pullStack') || changed.has('ladderVenue') || changed.has('ladderVenues') || changed.has('disabledVenues') || changed.has('scope')) { ladder.invalidate(); ladder.syncControls(); }

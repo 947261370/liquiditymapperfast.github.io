@@ -91,16 +91,20 @@ test('panel sounds are off by default, read field by field, and clamped', () => 
   assert.equal(Object.values(DEFAULT_PANEL_SOUNDS).every(p => Object.values(p).filter(v => typeof v === 'boolean').every(v => v === false)), true, 'every switch is off');
   const p = readPanelSounds({ flow: { burst: true, usd: 5, sensitivity: 99 }, depth: { pct: 12, imbalance: 'yes' }, book: { usd: 1e15 }, extra: 1 });
   assert.deepEqual([p.flow.burst, p.flow.usd, p.flow.sensitivity, p.depth.pct, p.depth.imbalance, p.book.usd], [true, 100_000, 10, 30, false, 5_000_000_000]);
+  assert.deepEqual(DEFAULT_PANEL_SOUNDS.depthPane, { extreme: false, range: 0.2, pct: 99, hours: 6 }, 'the extreme depth sound: the 99th percentile of six hours, within 20 %');
+  const d = readPanelSounds({ depthPane: { extreme: true, range: 0.3, pct: 100, hours: 99 } }).depthPane;
+  assert.deepEqual(d, { extreme: true, range: 0.2, pct: 99.9, hours: 12 }, 'a range the pane does not offer, a percentile of 100 and too many hours are repaired');
+  assert.deepEqual(readPanelSounds({ depthPane: { range: 0.05, pct: 95.04, hours: 1 } }).depthPane, { extreme: false, range: 0.05, pct: 95, hours: 2 });
   assert.deepEqual(readSounds({ on: true }).panels, DEFAULT_PANEL_SOUNDS);
 });
 
 test('every alert has notes that rise for buying and fall for selling, and none is silent', () => {
-  const kinds: AlertKind[] = ['flow-burst', 'bar-delta', 'wall-appeared', 'wall-pulled', 'imbalance', 'oi-jump'];
+  const kinds: AlertKind[] = ['flow-burst', 'bar-delta', 'wall-appeared', 'wall-pulled', 'imbalance', 'depth-extreme', 'oi-jump'];
   const mean = (n: Note[]) => n[0]!.freq - n[n.length - 1]!.freq;
   for (const kind of kinds) {
     const buy = alertNotes(kind, 'buy', 1), sell = alertNotes(kind, 'sell', 1);
     assert.ok(buy.length >= 2 && buy.every(n => n.gain > 0 && n.freq > 0 && n.decay > 0), kind);
-    if (kind === 'flow-burst' || kind === 'bar-delta' || kind === 'imbalance') assert.ok(mean(buy) < 0 && mean(sell) > 0, `${kind} buying rises, selling falls`);
+    if (kind === 'flow-burst' || kind === 'bar-delta' || kind === 'imbalance' || kind === 'depth-extreme') assert.ok(mean(buy) < 0 && mean(sell) > 0, `${kind} buying rises, selling falls`);
     assert.ok(alertNotes(kind, 'buy', 0).every(n => n.gain === 0), `${kind} is silent at volume 0`);
   }
 });
@@ -114,7 +118,7 @@ function rig(over: Partial<ReturnType<typeof readPanelSounds>> = {}, on = true) 
   const state: AppState = initialState();
   state.sounds = readSounds({ on, volume: 1, panels: { ...DEFAULT_PANEL_SOUNDS, ...over } });
   state.markets = [{ instrumentId: 'a:BTC', venue: 'a', marketType: 'perpetual' }, { instrumentId: 'aspot:BTC', venue: 'aspot', marketType: 'spot' }];
-  state.show = { ...state.show, cvd: true };
+  state.show = { ...state.show, cvd: true }; state.cvd = { ...state.cvd, bursts: true };
   const flow = new FlowBook(), player = new FakePlayer(), alerts = new Alerts({ state }, flow, player, () => T);
   return { state, flow, player, alerts };
 }
@@ -145,6 +149,14 @@ test('with the rule off the burst is still marked but silent; with sounds off no
   for (let i = 9; i >= 0; i--) off.flow.apply([['a:BTC', T - i * 1000, 3_000_000, 20_000]]);
   off.alerts.tick(T);
   assert.equal(off.player.played.length, 0); assert.equal(off.alerts.log.length, 0);
+});
+
+test('with the marks off (the default) and the rule off, no burst is looked for at all', () => {
+  const quiet = rig(); quiet.state.cvd = { ...quiet.state.cvd, bursts: false };
+  feed(quiet.flow, 'a:BTC', T, 2_000, 30_000, 30_000);
+  for (let i = 9; i >= 0; i--) quiet.flow.apply([['a:BTC', T - i * 1000, 3_000_000, 20_000]]);
+  quiet.alerts.tick(T);
+  assert.equal(quiet.alerts.bursts.length, 0);
 });
 
 test('a series that went quiet two seconds ago is history, not news', () => {
